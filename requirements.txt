@@ -1,0 +1,59 @@
+# -*- coding: utf-8 -*-
+# Требования для новой версии приложения (пакет inventory/).
+# Установка:  python -m pip install -r requirements.txt
+# Запуск:     python run_inventory.py   (или python -m inventory.app)
+
+# Интерфейс
+PyQt6>=6.6
+
+# Сканер штрихкодов (COM-порт)
+pyserial>=3.5
+
+# Голосовые заметки (Vosk, офлайн-распознавание)
+sounddevice>=0.4.6
+numpy>=1.26
+vosk>=0.3.45
+
+# Системная информация (батарея)
+psutil>=5.9
+
+# Excel-отчёт
+openpyxl>=3.1
+
+# Фото устройств через камеру ноутбука
+# (если не нужно фото — строку можно не ставить, приложение продолжит работать)
+opencv-python>=4.8
+
+# Разбор фото этикетки: штрихкоды (zbar) + встроенный OCR Windows (v1.5.0)
+# pyzbar ставится с собственной libzbar-64.dll; OCR использует системные
+# пакеты Windows. Если их нет — остальные функции работают.
+pyzbar>=0.1.9
+winrt-runtime>=3.2
+winrt-Windows.Media.Ocr
+winrt-Windows.Graphics.Imaging
+winrt-Windows.Storage.Streams
+winrt-Windows.Storage
+winrt-Windows.Globalization
+winrt-Windows.Foundation
+
+# «Стойка по фото (ИИ)» (v1.6.0) — БЕЗ pip-зависимостей.
+# Используется локальная ollama (127.0.0.1) через stdlib urllib;
+# ollama — отдельная программа, ставится с ollama.com:
+#   1) установить ollama;  2) вызвать `ollama pull qwen2.5vl:3b` (~3.2 ГБ).
+# Если ollama/модели нет — кнопка «🖥 Стойка» гасится, всё остальное работает.
+
+# QR-код адреса страницы приёма фото с телефона (Wi-Fi, офлайн)
+qrcode>=7.4
+
+# Тесты
+pytest>=8.0
+
+# Старый прототип (main.py, gui.py) — pandas, tabulate, requests только для него.
+# Не удаляйте, пока старая версия оставлена как запасная.
+pandas>=2.0
+tabulate>=0.9
+requests>=2.31
+tabulate>=0.9
+
+# Сборка одиночного exe для ноутбука (опционально, при необходимости):
+# pyinstaller>=6.0

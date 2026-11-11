@@ -1,0 +1,21 @@
+# Windows
+~$*
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Артефакты сборки (пересоздаются tools/build_exe.py)
+/build/
+/dist/
+/release/
+
+# Живые данные полевых выездов (база, фото объекта, журналы) — в историю не идут
+/data/
+
+# Временные
+*.tmp

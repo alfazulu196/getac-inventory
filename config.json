@@ -1,0 +1,45 @@
+{
+  "scanner": {
+    "mode": "com",
+    "port": "COM3",
+    "baudrate": 9600,
+    "bytesize": 8,
+    "parity": "N",
+    "stopbits": 1,
+    "encoding": "utf-8",
+    "timeout": 0.1,
+    "laser_keys": [
+      "F11",
+      "F12"
+    ],
+    "laser_delay": 0.05,
+    "dedup_seconds": 1.0,
+    "strip_prefix": "",
+    "strip_suffix": ""
+  },
+  "voice": {
+    "enabled": true,
+    "model_path": "model",
+    "sample_rate": 16000,
+    "channels": 1,
+    "device": 1,
+    "dictionary": {
+      "камутатор": "коммутатор",
+      "камутатора": "коммутатора",
+      "камира": "камера",
+      "камиру": "камеру",
+      "регистратор": "регистратор",
+      "регистратора": "регистратора",
+      "ибп": "ИБП",
+      "поэ": "PoE",
+      "по е": "PoE",
+      "витая пара": "витая пара"
+    }
+  },
+  "data_dir": "data",
+  "last_session_id": null,
+  "last_location_id": "e29fbd6cf6c54c30a9f48079dfc4c743",
+  "last_device_type": "server",
+  "low_battery_warning": 20,
+  "low_battery_critical": 10
+}
