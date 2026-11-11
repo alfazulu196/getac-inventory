@@ -242,7 +242,7 @@ class PhotoServer:
         if self._server is not None:
             return self.urls
         self._bind()
-        self._server.server_ref = self  # noqa: type — доступ обработчика к состоянию
+        self._server.server_ref = self  # доступ обработчика к состоянию
         self._thread = threading.Thread(
             target=self._server.serve_forever, name="photo-server", daemon=True
         )
@@ -422,7 +422,6 @@ class _PhotoHandler(BaseHTTPRequestHandler):
             device, location = state.snapshot_context()
             self._json({"device": device, "location": location})
         else:
-            state_urls = ", ".join(state.urls) or "—"
             self._answer(404, "Страница не найдена. Откройте адрес из приложения.", state)
 
     def do_POST(self) -> None:  # noqa: N802

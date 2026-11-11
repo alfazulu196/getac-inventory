@@ -1,12 +1,11 @@
 # gui.py
-import sys
 import time
 import serial  
 import winsound  
 import ctypes  # Низкоуровневая библиотека Windows для отправки системных клавиш лазера
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QPushButton, QLabel, QTextEdit, QLineEdit, QMessageBox)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+                             QHBoxLayout, QPushButton, QLabel, QTextEdit, QMessageBox)
+from PyQt6.QtCore import QThread, pyqtSignal
 
 # НАСТРОЙКА ЖЕЛЕЗА GETAC
 SCANNER_COM_PORT = "COM3" 

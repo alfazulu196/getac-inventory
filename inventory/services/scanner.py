@@ -7,7 +7,6 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable
 
 import serial
 import serial.tools.list_ports

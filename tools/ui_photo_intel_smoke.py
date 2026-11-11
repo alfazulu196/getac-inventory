@@ -15,7 +15,6 @@ if sys.platform == "win32":
     )
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from PyQt6.QtCore import QEventLoop, QTimer  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
 
 import inventory.ui.device_card as card_module  # noqa: E402

@@ -15,7 +15,7 @@ if sys.platform == "win32":
     )
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from PyQt6.QtWidgets import QApplication, QDialog  # noqa: E402
+from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from inventory.config import AppConfig, data_paths  # noqa: E402
 from inventory.core.db import Database  # noqa: E402

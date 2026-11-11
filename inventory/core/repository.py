@@ -38,7 +38,7 @@ DEVICE_COLUMNS = (
     "updated_at, deleted_at"
 )
 
-DEVICE_SELECT = f"""
+DEVICE_SELECT = """
 SELECT
     d.*,
     l.id AS loc_id,

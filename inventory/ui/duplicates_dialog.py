@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from inventory.config import device_type_name, status_name
+from inventory.config import device_type_name
 from inventory.core.duplicates import find_duplicate_groups
 from inventory.core.models import Device
 from inventory.core.repository import InventoryRepository

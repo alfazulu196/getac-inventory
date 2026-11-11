@@ -119,7 +119,7 @@ def test_export_nvr_channel_map(tmp_path):
     nvr = repo.create_device(
         session.id, "nvr", location.id, serial="NVR0001", model="DS-8608NI"
     )
-    cam1 = repo.create_device(
+    repo.create_device(
         session.id, "camera", location.id, serial="CAMSER1", nvr_channel="D2"
     )
     cam2 = repo.create_device(

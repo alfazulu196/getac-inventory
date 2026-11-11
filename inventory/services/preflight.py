@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from inventory.config import AppConfig, VOSK_MODEL_DIR, resolve_path
+from inventory.config import AppConfig, resolve_path
 from inventory.services.scanner import ComScanner, list_serial_ports
 
 

@@ -14,7 +14,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QListWidget,
     QVBoxLayout,
-    QWidget,
 )
 
 from inventory.services.photo_server import PhotoServer

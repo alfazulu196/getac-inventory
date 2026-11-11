@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QMainWindow, QStackedWidget, QMessageBox
+from PyQt6.QtWidgets import QMainWindow, QStackedWidget
 
 from inventory.config import APP_VERSION, AppConfig
 from inventory.core.models import Session

@@ -2,7 +2,7 @@
 """Модели данных приложения."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from typing import Any, Optional
 
 

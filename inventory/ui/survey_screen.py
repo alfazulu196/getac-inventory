@@ -985,7 +985,7 @@ class SurveyScreen(QWidget):
             "Создать устройство по фото?",
             f"На фото распознаны кандидаты:\n\n{summary}\n"
             + (f"\nВендор по MAC: {vendor}\n" if vendor else "")
-            + f"\nСоздать новое устройство с этими данными?\n\n"
+            + "\nСоздать новое устройство с этими данными?\n\n"
             "Да — откроется карточка с заполненными полями и фото.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,

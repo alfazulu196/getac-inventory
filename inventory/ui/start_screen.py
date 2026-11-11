@@ -15,7 +15,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,

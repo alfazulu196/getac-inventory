@@ -2,7 +2,6 @@
 """Резервное копирование и восстановление SQLite."""
 from __future__ import annotations
 
-import os
 import shutil
 import sqlite3
 from datetime import datetime

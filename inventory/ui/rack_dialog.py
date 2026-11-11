@@ -21,7 +21,6 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
-    QWidget,
 )
 
 from inventory.config import DEVICE_TYPES, DEVICE_TYPE_BY_CODE

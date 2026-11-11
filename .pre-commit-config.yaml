@@ -1,0 +1,8 @@
+# pre-commit: ruff проверяет изменённые файлы на каждом коммите.
+# Установка один раз: pip install pre-commit && pre-commit install
+# Правила — см. pyproject.toml (узкий набор: баги, не стиль).
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.4
+    hooks:
+      - id: ruff

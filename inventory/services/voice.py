@@ -125,7 +125,6 @@ class VoiceService:
         if not self.load():
             return False
         try:
-            import numpy as np
             import sounddevice as sd
             from vosk import KaldiRecognizer
 

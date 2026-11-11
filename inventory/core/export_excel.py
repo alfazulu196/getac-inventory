@@ -13,7 +13,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from inventory.config import APP_VERSION, STATUS_BY_CODE, device_type_name, status_name
-from inventory.core.baseline import compare_baseline, parse_baseline
+from inventory.core.baseline import compare_baseline
 from inventory.core.repository import InventoryRepository
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from openpyxl import load_workbook
 
 from tools.make_demo import build_demo
 
