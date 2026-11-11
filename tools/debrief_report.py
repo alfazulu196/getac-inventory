@@ -61,47 +61,72 @@ def _model_close(expected: str, actual: str) -> bool:
     return a == b or a[:6] == b[:6]
 
 
+def _center(units: set[int]) -> float:
+    """Центр диапазона юнитов: {2,3} → 2.5."""
+    return (min(units) + max(units)) / 2 if units else 0.0
+
+
 def score_frame(actual: list[dict], expected: list[dict]) -> tuple[int, int, int, list[str]]:
-    """Сверка кадра с эталоном → (точно, частично, пропущено, примечания)."""
+    """Сверка кадра с эталоном → (точно, частично, пропущено, примечания).
+
+    Правила: бренд обязателен, если он задан в эталоне; бренд-заглушка («»)
+    сверяется только внутри своего типа. Позиция: пересечение диапазонов —
+    точное попадание, соседний ряд (центры ≤ 1.5 U) — «частично (позиция)».
+    Среди кандидатов предпочитается полное совпадение модели и типа.
+    """
     used: set[int] = set()
     full = partial = missed = 0
     notes: list[str] = []
     for exp in expected:
         exp_pos = expand_positions(exp["position"])
         exp_brand = (exp.get("brand") or "").casefold()
-        best_rank, best_i = 0, -1
+        exp_type = exp.get("type", "")
+        best: tuple[int, int, int] | None = None  # (q, несовпадения, i)
         for i, act in enumerate(actual):
             if i in used:
                 continue
+            act_type = act.get("type", "")
+            if exp_brand:
+                if exp_brand != (act.get("brand") or "").casefold():
+                    continue
+            elif exp_type != act_type:
+                continue  # бренд в эталоне не задан — совпадаем по типу
             act_pos = expand_positions(act.get("position", ""))
-            act_brand = (act.get("brand") or "").casefold()
             if exp_pos and act_pos:
-                pos_ok = bool(exp_pos & act_pos)
-                pos_exact = exp_pos == act_pos
-            else:  # позиция неизвестна хотя бы у одного — сверяем брендом
-                pos_ok, pos_exact = True, False
-            if not pos_ok or exp_brand != act_brand:
-                continue
-            rank = 1
-            if _model_close(exp.get("model", ""), act.get("model") or ""):
-                rank += 1
-            if exp["type"] == act.get("type", ""):
-                rank += 1
-            if pos_exact:
-                rank += 1
-            if rank > best_rank:
-                best_rank, best_i = rank, i
-        label = f"{exp['brand'] or 'без бренда'} {exp['model']} [{exp['position']}]"
-        if best_rank >= 3:
-            full += 1
-            used.add(best_i)
-        elif best_rank > 0:
-            partial += 1
-            used.add(best_i)
-            notes.append(f"  ≈ частично: {label}")
-        else:
+                if exp_pos & act_pos:
+                    q = 0
+                elif abs(_center(exp_pos) - _center(act_pos)) <= 1.5:
+                    q = 1
+                else:
+                    continue
+            else:
+                q = 2  # позиция не читаема — не штрафуем
+            model_ok = _model_close(exp.get("model", ""), act.get("model") or "")
+            type_ok = exp_type == act_type
+            cand = (q, 0 if (model_ok and type_ok) else 1, i)
+            if best is None or cand < best:
+                best = cand
+        label = f"{exp_brand or 'без бренда'} {exp['model']} [{exp['position']}]"
+        if best is None:
             missed += 1
             notes.append(f"  ✗ ПРОПУЩЕН: {label}")
+            continue
+        used.add(best[2])
+        act = actual[best[2]]
+        model_ok = _model_close(exp.get("model", ""), act.get("model") or "")
+        type_ok = exp_type == act.get("type", "")
+        if best[0] == 0 and model_ok and type_ok:
+            full += 1
+        else:
+            partial += 1
+            why = []
+            if best[0] != 0:
+                why.append("позиция")
+            if not model_ok:
+                why.append("модель")
+            if not type_ok:
+                why.append("тип")
+            notes.append(f"  ≈ частично ({', '.join(why)}): {label}")
     for i, act in enumerate(actual):
         if i not in used:
             who = act.get("brand") or act.get("detail") or "?"
