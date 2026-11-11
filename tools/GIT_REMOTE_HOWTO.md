@@ -1,43 +1,46 @@
-# Третья копия истории: приватный git-remote (GitHub)
+# Третья копия истории: приватный git-remote (GitHub) — ГОТОВО
 
-Сейчас история живёт в двух местах: диск этой машины и `backup/repo-20261111.bundle`
-(флешка). Облако добавляет независимую копию — диск и флешка могут погибнуть
-вместе, репозиторий на GitHub — нет.
+История живёт в трёх независимых местах:
 
-Репозиторий ~200 МБ (модель Vosk 87 МБ внутри, крупнейший файл 31,5 МБ —
-лимиты GitHub соблюдены, LFS не нужен). Репозиторий делаем **приватным**:
-в коде есть специфика объекта и контрактов.
+1. **Диск этой машины** — `C:\...\Таблица инвентаризации\.git`
+2. **Флешка** — `backup/repo-20261111.bundle` (офлайн-копия, `git bundle verify`)
+3. **GitHub (облако)** — https://github.com/alfazulu196/getac-inventory (**Private**)
 
-## Шаги (5 минут, нужен ваш аккаунт на github.com)
+Репозиторий создан 11.11.2026 через GitHub CLI (device-code авторизация),
+аккаунт `alfazulu196`, токен в keyring (scopes: repo), helper настроен на
+`%LOCALAPPDATA%\Programs\GitHub CLI\bin\gh.exe` (portable-копия gh v2.103.3,
+добавлена в PATH пользователя). `git push` работает без ручных токенов.
 
-1. Создать пустой приватный репозиторий:
-   github.com → «+» → **New repository** → имя `getac-inventory` →
-   **Private** → БЕЗ README/.gitignore/license (репозиторий уже есть) → Create
+## Повседневное использование
 
-2. На этой машине, в папке проекта:
+- После значимых правок: `git commit` → `git push` (одно слово, ~200 МБ
+  уже в облаке, дальше уходит только дельта — секунды).
+- Посмотреть состояние в браузере: `gh repo view --web`
+- Проверка синхрона: `git status -sb` (показывает ↑/↓ против origin/main)
 
-   ```bat
-   git remote add origin https://github.com/ВАШ_ЛОГИН/getac-inventory.git
-   git push -u origin main
-   ```
+## Восстановление на новой машине
 
-3. Проверка: страница репозитория в браузере показывает код, 5 коммитов,
-   файлы `inventory/`, `tests/`, `tools/`, `ЧЕК_ЛИСТ_ВЫЕЗД.md`.
+```bat
+git clone https://github.com/alfazulu196/getac-inventory.git
+python tools/build_exe.py    rem соберёт поставку с нуля
+```
 
-4. Windows может спросить логин/пароль — GitHub с августа 2021 принимает
-   **Personal Access Token** вместо пароля: Settings → Developer settings →
-   Tokens (classic) → Generate new token → scope `repo`. Вставить токен
-   в поле пароля один раз — Windows запомнит (Credential Manager).
+(при clone из-под чужого аккаунта — доступ по приглашению или через PAT)
 
-## Дальше
+## Если менять учётные данные
 
-- После значимых правок: обычный `git commit` + `git push` (одно слово).
-- Восстановление на новой машине:
-  `git clone https://github.com/ВАШ_ЛОГИН/getac-inventory.git` — и
-  `python tools/build_exe.py` соберёт поставку с нуля.
-- Бандл на флешке остаётся офлайн-страховкой на случай отсутствия интернета.
+- Перелогиниться: `gh auth login -h github.com -p https --web`
+- Перенастроить helper после переезда gh.exe: `gh auth setup-git`
+- Токен живёт в keyring Windows; для clone на другой машине —
+  Settings → Developer settings → Tokens (scope `repo`).
 
-## Альтернатива: GitLab (если нет GitHub)
+## Офлайн-страховка
 
-То же самое: gitlab.com → New project → Private →
-`git remote add origin https://gitlab.com/ВАШ_ЛОГИН/getac-inventory.git`.
+Бандл на флешке обновляется после значимых коммитов:
+
+```bat
+git bundle create backup/repo-20261111.bundle --all
+git bundle verify backup/repo-20261111.bundle
+```
+
+Диск + флешка + облако: любой один носитель можно потерять без ущерба.
