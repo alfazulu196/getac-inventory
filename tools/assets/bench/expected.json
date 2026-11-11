@@ -1,0 +1,258 @@
+{
+ "rack_mock.jpg": [
+  {
+   "position": "U9-U10",
+   "brand": "Cisco",
+   "model": "WS-C2960+24TC-L",
+   "type": "switch"
+  },
+  {
+   "position": "U8",
+   "brand": "",
+   "model": "",
+   "type": "patch"
+  },
+  {
+   "position": "U7",
+   "brand": "TP-LINK",
+   "model": "TL-SG1016",
+   "type": "switch"
+  },
+  {
+   "position": "U6",
+   "brand": "HIKVISION",
+   "model": "DS-7608NI-K2",
+   "type": "nvr"
+  },
+  {
+   "position": "U5",
+   "brand": "APC",
+   "model": "AP7921",
+   "type": "psu"
+  },
+  {
+   "position": "U4",
+   "brand": "MikroTik",
+   "model": "RB2011UiAS-IN",
+   "type": "router"
+  },
+  {
+   "position": "U2-U3",
+   "brand": "HP",
+   "model": "ProLiant DL360 G9",
+   "type": "server"
+  },
+  {
+   "position": "U1",
+   "brand": "APC",
+   "model": "Smart-UPS SMT750R",
+   "type": "ups"
+  }
+ ],
+ "rack_dark.jpg": [
+  {
+   "position": "U9-U10",
+   "brand": "Cisco",
+   "model": "WS-C2960+24TC-L",
+   "type": "switch"
+  },
+  {
+   "position": "U8",
+   "brand": "",
+   "model": "",
+   "type": "patch"
+  },
+  {
+   "position": "U7",
+   "brand": "TP-LINK",
+   "model": "TL-SG1016",
+   "type": "switch"
+  },
+  {
+   "position": "U6",
+   "brand": "HIKVISION",
+   "model": "DS-7608NI-K2",
+   "type": "nvr"
+  },
+  {
+   "position": "U5",
+   "brand": "APC",
+   "model": "AP7921",
+   "type": "psu"
+  },
+  {
+   "position": "U4",
+   "brand": "MikroTik",
+   "model": "RB2011UiAS-IN",
+   "type": "router"
+  },
+  {
+   "position": "U2-U3",
+   "brand": "HP",
+   "model": "ProLiant DL360 G9",
+   "type": "server"
+  },
+  {
+   "position": "U1",
+   "brand": "APC",
+   "model": "Smart-UPS SMT750R",
+   "type": "ups"
+  }
+ ],
+ "rack_glare.jpg": [
+  {
+   "position": "U9-U10",
+   "brand": "Cisco",
+   "model": "WS-C2960+24TC-L",
+   "type": "switch"
+  },
+  {
+   "position": "U8",
+   "brand": "",
+   "model": "",
+   "type": "patch"
+  },
+  {
+   "position": "U7",
+   "brand": "TP-LINK",
+   "model": "TL-SG1016",
+   "type": "switch"
+  },
+  {
+   "position": "U6",
+   "brand": "HIKVISION",
+   "model": "DS-7608NI-K2",
+   "type": "nvr"
+  },
+  {
+   "position": "U5",
+   "brand": "APC",
+   "model": "AP7921",
+   "type": "psu"
+  },
+  {
+   "position": "U4",
+   "brand": "MikroTik",
+   "model": "RB2011UiAS-IN",
+   "type": "router"
+  },
+  {
+   "position": "U2-U3",
+   "brand": "HP",
+   "model": "ProLiant DL360 G9",
+   "type": "server"
+  },
+  {
+   "position": "U1",
+   "brand": "APC",
+   "model": "Smart-UPS SMT750R",
+   "type": "ups"
+  }
+ ],
+ "rack_partial.jpg": [
+  {
+   "position": "U5",
+   "brand": "APC",
+   "model": "AP7921",
+   "type": "psu"
+  },
+  {
+   "position": "U4",
+   "brand": "MikroTik",
+   "model": "RB2011UiAS-IN",
+   "type": "router"
+  },
+  {
+   "position": "U2-U3",
+   "brand": "HP",
+   "model": "ProLiant DL360 G9",
+   "type": "server"
+  },
+  {
+   "position": "U1",
+   "brand": "APC",
+   "model": "Smart-UPS SMT750R",
+   "type": "ups"
+  }
+ ],
+ "rack_dense15.jpg": [
+  {
+   "position": "U14-U15",
+   "brand": "D-Link",
+   "model": "DGS-1210-28",
+   "type": "switch"
+  },
+  {
+   "position": "U13",
+   "brand": "",
+   "model": "",
+   "type": "patch"
+  },
+  {
+   "position": "U12",
+   "brand": "Zyxel",
+   "model": "GS1920-24",
+   "type": "switch"
+  },
+  {
+   "position": "U11",
+   "brand": "Ubiquiti",
+   "model": "UniFi Switch 24",
+   "type": "switch"
+  },
+  {
+   "position": "U10",
+   "brand": "Netgear",
+   "model": "GS108Ev3",
+   "type": "switch"
+  },
+  {
+   "position": "U9",
+   "brand": "HIKVISION",
+   "model": "DS-7608NI-K2",
+   "type": "nvr"
+  },
+  {
+   "position": "U8",
+   "brand": "APC",
+   "model": "AP7921",
+   "type": "psu"
+  },
+  {
+   "position": "U7",
+   "brand": "D-Link",
+   "model": "DES-3200-18",
+   "type": "switch"
+  },
+  {
+   "position": "U6",
+   "brand": "MikroTik",
+   "model": "CRS125-24G",
+   "type": "router"
+  },
+  {
+   "position": "U4-U5",
+   "brand": "HP",
+   "model": "ProLiant DL380 G9",
+   "type": "server"
+  },
+  {
+   "position": "U3",
+   "brand": "APC",
+   "model": "AP7921",
+   "type": "psu"
+  },
+  {
+   "position": "U2",
+   "brand": "Eaton",
+   "model": "5P 750 Rack",
+   "type": "ups"
+  },
+  {
+   "position": "U1",
+   "brand": "APC",
+   "model": "Smart-UPS SMT750R",
+   "type": "ups"
+  }
+ ]
+}

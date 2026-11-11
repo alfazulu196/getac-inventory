@@ -174,10 +174,10 @@ def draw_unit(d: ImageDraw.ImageDraw, f: dict, unit: tuple) -> None:
                   fill=GREEN)
 
 
-def draw_rail(d: ImageDraw.ImageDraw, f: dict) -> None:
+def draw_rail(d: ImageDraw.ImageDraw, f: dict, rack_u: int = 10) -> None:
     """Левая шина: отверстия + белые бирки с номером юнита."""
     d.rectangle([RAIL_X0, TOP_Y, RAIL_X1, BOTTOM_Y], fill=(66, 70, 76))
-    for u in range(1, 11):
+    for u in range(1, rack_u + 1):
         _, y_bot = y_range(u, u)
         cy = (y_bot + y_bot - U_H) / 2  # центр U-ряда
         d.ellipse([RAIL_X0 + 10, cy - 4, RAIL_X0 + 18, cy + 4],
@@ -206,7 +206,14 @@ def add_photo_realism(img: Image.Image) -> Image.Image:
     return Image.fromarray(np.clip(arr, 0, 255).astype("uint8"), "RGB")
 
 
-def main() -> None:
+def build(units: list[tuple], rack_u: int = 10) -> Image.Image:
+    """Собирает изображение стойки: rack_u рядов, units — от верха к низу.
+
+    Используется и базовым макетом (main), и бенчмарк-набором
+    (tools/make_bench_set.py) — единый рендер для всех вариантов.
+    """
+    global U_H
+    U_H = (BOTTOM_Y - TOP_Y) / rack_u
     random.seed(7)
     f = fonts()
     img = Image.new("RGB", (W, H), (24, 26, 30))
@@ -214,13 +221,21 @@ def main() -> None:
     # фон шкафа: тёмное нутро
     d.rectangle([FRAME, FRAME, W - FRAME, H - FRAME], fill=(30, 32, 37))
     d.rectangle([0, 0, W, H], outline=(56, 60, 66), width=FRAME * 2)
-    draw_rail(d, f)
-    for unit in UNITS:
+    draw_rail(d, f, rack_u)
+    for unit in units:
         draw_unit(d, f, unit)
-    img = add_photo_realism(img)
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    img.save(OUT, "JPEG", quality=88)
-    print(f"Готово: {OUT} ({OUT.stat().st_size / 1024:.0f} КБ, {W}x{H})")
+    return add_photo_realism(img)
+
+
+def save(img: Image.Image, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(path, "JPEG", quality=88)
+    print(f"Готово: {path} ({path.stat().st_size / 1024:.0f} КБ, "
+          f"{img.width}x{img.height})")
+
+
+def main() -> None:
+    save(build(UNITS), OUT)
 
 
 if __name__ == "__main__":
