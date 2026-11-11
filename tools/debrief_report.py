@@ -53,12 +53,19 @@ def expand_positions(text: str) -> set[int]:
 
 
 def _model_close(expected: str, actual: str) -> bool:
-    """Модель совпадает с точностью до регистра/пробелов/разделителей."""
+    """Совпадение модели: полное либо нетривиальный префикс (≥4 симв.).
+
+    «DES-1210-10/ME» против прочитанного «DES-1210» — попадание (модель
+    обрезана при чтении); «TL-SG1016» и «TL-SG1024» — разные модели,
+    различаются честно; пустая модель с одной из сторон не противоречит.
+    """
     norm = lambda s: re.sub(r"[\s._/\\+-]+", "", (s or "").upper())  # noqa: E731
     a, b = norm(expected), norm(actual)
     if not a or not b:
-        return True  # отсутствие модели не противоречит (ее можно не прочесть)
-    return a == b or a[:6] == b[:6]
+        return True
+    if a == b:
+        return True
+    return (a.startswith(b) or b.startswith(a)) and min(len(a), len(b)) >= 4
 
 
 def _center(units: set[int]) -> float:
