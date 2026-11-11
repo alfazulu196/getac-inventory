@@ -13,6 +13,7 @@ __pycache__/
 /build/
 /dist/
 /release/
+/InventorySurvey.spec
 
 # Локальный бэкап репозитория (git bundle — копировать на флешку вручную)
 /backup/
