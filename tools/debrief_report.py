@@ -147,8 +147,9 @@ def print_frames(entries: list[dict]) -> None:
     for i, e in enumerate(entries, 1):
         status = "OK " if e.get("ok") else "ОШИБКА"
         elapsed = f"{e.get('elapsed_s', 0):.0f}с"
+        fmt = e.get("format_used") or "?"
         print(f"#{i:>3} {e.get('ts', '?')} | {e.get('photo', '?')} | {status} | "
-              f"{elapsed:>6} | юнитов: {e.get('n_devices', 0)} | {e.get('model', '?')}")
+              f"{elapsed:>6} | юнитов: {e.get('n_devices', 0)} | {e.get('model', '?')} | fmt:{fmt}")
         if not e.get("ok"):
             print(f"      причина: {e.get('error')}")
         for d in e.get("devices", []):
@@ -178,6 +179,15 @@ def print_summary(entries: list[dict]) -> None:
               f"мин {min(times):.0f} с, макс {max(times):.0f} с")
     print(f"Всего распознано юнитов: {units}")
     print(f"Модели: {models}")
+    formats: dict[str, int] = {}
+    for e in entries:
+        if e.get("format_used"):
+            formats[e["format_used"]] = formats.get(e["format_used"], 0) + 1
+    if formats:
+        print(f"Форматы запроса (schema|json|none): {formats}")
+    cancelled = sum(1 for e in entries if e.get("error") == "отменено пользователем")
+    if cancelled:
+        print(f"Отменено пользователем: {cancelled} кадр(ов)")
     if errors:
         print("Ошибки:")
         for err, cnt in errors.items():
