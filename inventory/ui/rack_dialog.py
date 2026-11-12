@@ -100,6 +100,10 @@ class RackDialog(QDialog):
 
         self.table = QTableWidget(0, len(_HEADERS))
         self.table.setHorizontalHeaderLabels(_HEADERS)
+        # Комбо «Тип» должно занимать весь ряд: глобальный паддинг item'ов
+        # (6px) сплющивает ячейку-виджет до ~17px и текст типа пропадает
+        # (найдено скриншот-туром v1.6.2; вертикаль 0, горизонталь оставлен).
+        self.table.setStyleSheet("QTableWidget::item { padding: 0px 6px; }")
         self.table.setColumnWidth(_COL_CHECK, 28)
         self.table.setColumnWidth(_COL_TYPE, 190)
         self.table.setColumnWidth(_COL_NAME, 260)

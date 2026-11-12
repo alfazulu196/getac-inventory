@@ -25,6 +25,22 @@ def test_device_title_brand_model():
     assert RackDevice(brand="D-Link", model="DES-1210").title == "D-Link DES-1210"
 
 
+def test_prompt_matches_prompt_lab_combo():
+    """Промпт приложения = проверенный «combo» из промпт-лабы (v1.6.3).
+
+    Лаба собирает варианты из констант приложения (_PROMPT_V162 +
+    PROMPT_ADDITIONS_V163), так что расхождение возможно только при
+    правке композиции — этот тест её ловит.
+    """
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import prompt_lab  # noqa: PLC0415 — импорт ленивый, Qt не требует
+
+    assert rack_ai._PROMPT == prompt_lab.VARIANTS["combo"]
+    assert "ДОПОЛНИТЕЛЬНО" in rack_ai._PROMPT  # добавки на месте
+
+
 def test_device_title_only_brand():
     assert RackDevice(brand="APC").title == "APC"
 
