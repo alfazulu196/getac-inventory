@@ -118,6 +118,10 @@ class DeviceListDialog(QDialog):
         self.delete_btn = secondary_button("🗑 Удалить", height=54, font_size=16)
         self.delete_btn.clicked.connect(self._delete_selected)
         buttons.addWidget(self.delete_btn)
+
+        self.tags_btn = secondary_button("🏷 Бирки QR", height=54, font_size=16)
+        self.tags_btn.clicked.connect(self._print_tags)
+        buttons.addWidget(self.tags_btn)
         buttons.addStretch(1)
 
         self.close_btn = big_button("Закрыть", "#3b4a5f", height=54, font_size=17)
@@ -208,3 +212,9 @@ class DeviceListDialog(QDialog):
             self.repo.soft_delete_device(device.id)
             self.refresh()
             self.devices_changed.emit()
+
+    def _print_tags(self) -> None:
+        from inventory.ui.tags_dialog import TagsDialog  # noqa: PLC0415
+
+        dialog = TagsDialog(self.repo, self.session_id, self.paths, self)
+        dialog.exec()
