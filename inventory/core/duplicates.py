@@ -1,5 +1,5 @@
 # inventory/core/duplicates.py
-"""Проверка дублей устройств по S/N и MAC."""
+"""Проверка дублей устройств по S/N, MAC и инвентарному номеру."""
 from __future__ import annotations
 
 from collections import Counter, defaultdict
@@ -19,6 +19,7 @@ class DuplicateMatch:
         fields = {
             "serial": "S/N",
             "mac": "MAC",
+            "asset_tag": "Инв. номер",
         }
         labels = ", ".join(fields.get(item, item) for item in self.matched_by)
         location = self.device.location.label() if self.device.location else ""
@@ -33,25 +34,32 @@ def check_duplicates(
     parsed: ParsedCode | None = None,
     serial: str | None = None,
     mac: str | None = None,
+    asset_tag: str | None = None,
     exclude_id: str | None = None,
 ) -> list[DuplicateMatch]:
-    """Возвращает совпадения по S/N или MAC. EAN дублем устройства не считается."""
+    """Совпадения по S/N, MAC или инвентарному номеру (бирка «INV=…»).
+
+    EAN дублем устройства не считается.
+    """
     if parsed is not None:
         # Товарный код не идентифицирует конкретное устройство.
         if parsed.code_type.value == "ean":
             return []
         serial = serial or parsed.fields.get("serial")
         mac = mac or parsed.fields.get("mac")
+        asset_tag = asset_tag or parsed.fields.get("asset_tag")
 
     serial_norm = normalize_serial(serial)
     mac_norm = normalize_mac_compact(mac)
-    if not serial_norm and not mac_norm:
+    asset_norm = (asset_tag or "").strip().upper() or None
+    if not serial_norm and not mac_norm and not asset_norm:
         return []
 
     devices = repo.find_duplicates(
         session_id,
         serial_norm=serial_norm,
         mac_norm=mac_norm,
+        asset_tag=asset_norm,
         exclude_id=exclude_id,
     )
     result: list[DuplicateMatch] = []
@@ -61,6 +69,8 @@ def check_duplicates(
             matched_by.append("serial")
         if mac_norm and device.mac_norm == mac_norm:
             matched_by.append("mac")
+        if asset_norm and (device.asset_tag or "").strip().upper() == asset_norm:
+            matched_by.append("asset_tag")
         result.append(DuplicateMatch(device=device, matched_by=matched_by))
     return result
 

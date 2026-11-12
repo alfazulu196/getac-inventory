@@ -1,5 +1,5 @@
 # inventory/services/qr_tags.py
-"""QR-бирки оборудования (v1.6.4): печать PDF-A4 с наклейками.
+"""QR-бирки оборудования (v1.6.4+): печать PDF-A4 с наклейками.
 
 Идея: QR кодирует ТОТ ЖЕ структурированный формат, что приложение уже
 парсит камерой — «SN=<serial>;MAC=<mac>». Повторный выезд: скан бирки
@@ -7,12 +7,17 @@
 без фото-разбора этикетки и без ИИ. Кросс-визитная идентификация — по
 S/N+MAC, тот же ключ, что у дубль-детекта.
 
-Бирки печатать в офисе после инвентаризации (поле не трогает);
-устройства без S/N и MAC в очередь не попадают — им бирки в v2.
+v1.6.5: бирки и для безымянного оборудования — устройству без S/N и MAC
+присваивается инвентарный номер «INV-####» (глобальный реестр, поле
+«Инвентарный номер» карточки), QR кодирует «INV=INV-####»; скан такой
+бирки находит существующую карточку (дубли ищутся и по ИНН — duplicates).
+
+Бирки печатать в офисе после инвентаризации (поле не трогает).
 """
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -39,13 +44,40 @@ _MARGIN_Y = (_PAGE_H - _ROWS * _LABEL_H) / 2   # 8.5 мм
 
 
 def tag_code(device: Device) -> str | None:
-    """Содержимое бирки: 'SN=...;MAC=...' или None, если нечего кодировать."""
+    """Содержимое бирки: 'SN=…;MAC=…' или 'INV=…', None — нечего кодировать."""
     parts: list[str] = []
     if (device.serial or "").strip():
         parts.append(f"SN={device.serial.strip()}")
     if (device.mac or "").strip():
         parts.append(f"MAC={device.mac.strip()}")
+    if not parts and (device.asset_tag or "").strip():
+        # Безымянное устройство: идентифицируем присвоенным ИНВ (реестр v1.6.5).
+        parts.append(f"INV={device.asset_tag.strip()}")
     return ";".join(parts) if parts else None
+
+
+def assign_tag_ids(devices: list[Device], repo: Any) -> int:
+    """Безымянным (без S/N и MAC) присваивает ИНВ «INV-####» и сохраняет в БД.
+
+    Реестр глобальный: repo.next_asset_tag_number() выдаёт следующий номер
+    среди ВСЕХ сессий — номер с напечатанной бирки не выдаётся дважды.
+    Возвращает число присвоенных номеров.
+    """
+    need = [
+        device for device in devices
+        if not (device.serial or "").strip()
+        and not (device.mac or "").strip()
+        and not (device.asset_tag or "").strip()
+    ]
+    if not need:
+        return 0
+    number = repo.next_asset_tag_number()
+    for device in need:
+        tag = f"INV-{number:04d}"
+        repo.update_device(device.id, asset_tag=tag)
+        device.asset_tag = tag
+        number += 1
+    return len(need)
 
 
 def qr_image(text: str, size_px: int = 320) -> QImage:
@@ -101,6 +133,7 @@ def _draw_label(painter: QPainter, device: Device, x: float, y: float,
         or device_type_name(device.device_type)
     sn = (device.serial or "").strip()
     mac = (device.mac or "").strip()
+    asset = (device.asset_tag or "").strip()
     loc = device.location.short_label() if device.location else ""
     dark = QColor(20, 26, 34)
     mid = QColor(60, 70, 84)
@@ -110,6 +143,10 @@ def _draw_label(painter: QPainter, device: Device, x: float, y: float,
         (_font(7.5), dark, name, 5.4),
         (_font(7.0), mid, f"S/N {sn}" if sn else "", 5.2),
         (_font(7.0), mid, f"MAC {mac}" if mac else "", 5.2),
+        # ИНВ показываем, когда он ЕДИНСТВЕННЫЙ идентификатор (безымянное
+        # устройство): строка не влезла бы вместе с S/N и MAC.
+        (_font(7.0, bold=True), dark,
+         f"ИНВ {asset}" if asset and not sn and not mac else "", 5.2),
         (_font(6.5), grey, loc, 5.2),
     ]
     ty = y + 4.4 * mm
@@ -123,6 +160,22 @@ def _draw_label(painter: QPainter, device: Device, x: float, y: float,
             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
             text)
         ty += row_h * mm
+
+
+def render_label_png(device: Device, out_path: str | Path, scale: int = 12) -> Path:
+    """Одна этикетка в PNG (~300 dpi): перепечатка утерянной, термо-принтер."""
+    if QGuiApplication.instance() is None:
+        _app = QGuiApplication([])  # QApplication обязателен до QPainter
+    img = QImage(int(_LABEL_W * scale) + 20, int(_LABEL_H * scale) + 20,
+                 QImage.Format.Format_RGB32)
+    img.fill(QColor("white"))
+    painter = QPainter(img)
+    try:
+        _draw_label(painter, device, 10, 10, scale)
+    finally:
+        painter.end()
+    img.save(str(out_path))
+    return Path(out_path)
 
 
 def generate_tags_pdf(devices: list[Device], out_path: str | Path,

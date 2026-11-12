@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -672,6 +673,7 @@ class InventoryRepository:
         session_id: str,
         serial_norm: str | None = None,
         mac_norm: str | None = None,
+        asset_tag: str | None = None,
         exclude_id: str | None = None,
     ) -> list[Device]:
         conditions: list[str] = []
@@ -682,6 +684,9 @@ class InventoryRepository:
         if mac_norm:
             conditions.append("mac_norm = ?")
             params.append(mac_norm)
+        if asset_tag:
+            conditions.append("UPPER(TRIM(asset_tag)) = ?")
+            params.append(asset_tag.strip().upper())
         if not conditions:
             return []
         sql = (
@@ -698,6 +703,25 @@ class InventoryRepository:
             if device:
                 result.append(device)
         return result
+
+    def next_asset_tag_number(self, prefix: str = "INV-") -> int:
+        """Следующий номер бирки: max среди ИНВ этого формата + 1.
+
+        Реестр глобальный (по всем сессиям): номер, однажды попавший на
+        напечатанную бирку, больше не выдаётся другому устройству.
+        """
+        best = 0
+        pattern = re.escape(prefix) + r"(\d+)"
+        rows = self.db.fetchall(
+            "SELECT asset_tag FROM devices "
+            "WHERE deleted_at IS NULL AND asset_tag LIKE ?",
+            (prefix + "%",),
+        )
+        for row in rows:
+            match = re.match(pattern, (row["asset_tag"] or "").strip())
+            if match:
+                best = max(best, int(match.group(1)))
+        return best + 1
 
     def get_summary(self, session_id: str) -> dict[str, Any]:
         total_row = self.db.fetchone(

@@ -43,10 +43,10 @@ class VoiceService:
         r"""Путь модели в ASCII-каталоге, если исходный путь с кириллицей.
 
         Vosk на Windows открывает файлы модели через кодовую страницу ANSI,
-        поэтому не-ASCII путь (например «Барбацуца\! Медвед\…») даёт ошибку
-        «Folder does not contain model files». Решение: один раз скопировать
-        модель в %LOCALAPPDATA%\\GetacInventory\\vosk_model (ASCII) и грузить
-        оттуда. Копия контролируется маркером с исходным путём.
+        поэтому не-ASCII путь (например «Проекты\Папка с кириллицей\…»)
+        даёт ошибку «Folder does not contain model files». Решение: один
+        раз скопировать модель в %LOCALAPPDATA%\\GetacInventory\\vosk_model
+        (ASCII) и грузить оттуда. Копия контролируется маркером с исходным путём.
         """
         try:
             str(self.model_path).encode("ascii")

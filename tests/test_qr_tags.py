@@ -1,5 +1,5 @@
 # tests/test_qr_tags.py
-"""Тесты QR-бирок (v1.6.4): код бирки, QR-картинка, генерация PDF-A4."""
+"""Тесты QR-бирок: код бирки, QR-картинка, PDF-A4, реестр ИНВ, PNG."""
 from __future__ import annotations
 
 import os
@@ -9,10 +9,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtGui import QGuiApplication  # noqa: E402
 
+from inventory.core.db import Database  # noqa: E402
+from inventory.core.duplicates import check_duplicates  # noqa: E402
 from inventory.core.models import Device, Location  # noqa: E402
+from inventory.core.parser import parse_code  # noqa: E402
+from inventory.core.repository import InventoryRepository  # noqa: E402
 from inventory.services.qr_tags import (  # noqa: E402
+    assign_tag_ids,
     generate_tags_pdf,
     qr_image,
+    render_label_png,
     tag_code,
 )
 
@@ -63,6 +69,15 @@ def test_tag_code_nothing_to_tag() -> None:
     assert tag_code(_device(serial="", mac="")) is None
 
 
+def test_tag_code_inv_fallback() -> None:
+    """Безымянное устройство с присвоенным ИНВ кодируется как «INV=…»."""
+    assert tag_code(_device(serial=None, mac=None, asset_tag="INV-0007")) \
+        == "INV=INV-0007"
+    # S/N важнее: при нём ИНВ в QR не нужен
+    assert tag_code(_device(asset_tag="INV-0007")) \
+        == "SN=ABC12345;MAC=AA:BB:CC:DD:EE:FF"
+
+
 # ---------------------------------------------------------------- qr_image
 def test_qr_image_round_and_polarity() -> None:
     _app()
@@ -73,12 +88,18 @@ def test_qr_image_round_and_polarity() -> None:
 
 def test_tag_code_roundtrip_through_parser() -> None:
     """Смысл фичи: родной парсер приложения обязан понять содержимое бирки."""
-    from inventory.core.parser import parse_code  # noqa: PLC0415
-
     parsed = parse_code(tag_code(_device()))
     assert parsed.code_type.value == "qr"
     assert parsed.serial == "ABC12345"
     assert parsed.mac == "AA:BB:CC:DD:EE:FF"
+
+
+def test_parse_inv_roundtrip_through_parser() -> None:
+    """Бирка безымянного устройства: парсер понимает «INV=…» → asset_tag."""
+    parsed = parse_code(tag_code(_device(serial=None, mac=None,
+                                         asset_tag="INV-0007")))
+    assert parsed.code_type.value == "qr"
+    assert parsed.fields.get("asset_tag") == "INV-0007"
 
 
 # --------------------------------------------------------------- PDF-A4
@@ -124,3 +145,74 @@ def test_generate_tags_pdf_pagination(tmp_path: Path) -> None:
     assert (printed, skipped) == (25, 0)
     data = out.read_bytes()
     assert data.count(b"/Type /Page") >= 2 or data.count(b"/Type/Page") >= 2
+
+
+# ------------------------------------------------------------------ PNG
+def test_render_label_png(tmp_path: Path) -> None:
+    _app()
+    out = render_label_png(_device(), tmp_path / "birka.png")
+    assert out.exists()
+    assert out.stat().st_size > 2000
+
+
+# ------------------------------------------------- реестр ИНВ + дубли
+def _repo(tmp_path: Path):
+    db = Database(tmp_path / "qr.db")
+    repo = InventoryRepository(db)
+    session = repo.create_session("Объект", "Инспектор")
+    location = repo.create_location(session.id, "1", "10", "", "")
+    return repo, session, location
+
+
+def test_assign_tag_ids_sequential_and_persisted(tmp_path: Path) -> None:
+    """Безымянным — номера по порядку в БД; у именных ничего не трогаем."""
+    repo, session, location = _repo(tmp_path)
+    unlabeled1 = repo.create_device(session.id, "camera", location.id)
+    unlabeled2 = repo.create_device(session.id, "camera", location.id)
+    labeled = repo.create_device(session.id, "camera", location.id,
+                                 serial="AAA111")
+    assigned = assign_tag_ids([unlabeled1, unlabeled2, labeled], repo)
+    assert assigned == 2
+    assert repo.get_device(unlabeled1.id).asset_tag == "INV-0001"
+    assert repo.get_device(unlabeled2.id).asset_tag == "INV-0002"
+    assert repo.get_device(labeled.id).asset_tag is None
+    # повторный вызов не плодит новые номера (уже есть asset_tag)
+    assert assign_tag_ids([unlabeled1, unlabeled2, labeled], repo) == 0
+
+
+def test_next_asset_tag_number_global_across_sessions(tmp_path: Path) -> None:
+    """Реестр глобальный: max по ВСЕМ сессиям + 1."""
+    repo, session, location = _repo(tmp_path)
+    repo.create_device(session.id, "camera", location.id, asset_tag="INV-0005")
+    repo.finish_session(session.id)  # вторая активная сессия запрещена
+    other = repo.create_session("Объект 2", "Инспектор")
+    loc2 = repo.create_location(other.id, "1", "10", "", "")
+    repo.create_device(other.id, "camera", loc2.id, asset_tag="INV-0012")
+    assert repo.next_asset_tag_number() == 13
+    # чтение ничего не меняет
+    assert repo.next_asset_tag_number() == 13
+
+
+def test_check_duplicates_by_asset_tag(tmp_path: Path) -> None:
+    """Скан бирки «INV=…» находит существующую карточку по инв. номеру."""
+    from inventory.core.duplicates import check_duplicates  # noqa: PLC0415
+
+    repo, session, location = _repo(tmp_path)
+    device = repo.create_device(session.id, "camera", location.id,
+                                asset_tag="INV-0001")
+    repo.create_device(session.id, "camera", location.id, serial="AAA111")
+    parsed = parse_code("INV=INV-0001")
+    matches = check_duplicates(repo, session.id, parsed=parsed)
+    assert len(matches) == 1
+    assert matches[0].device.id == device.id
+    assert matches[0].matched_by == ["asset_tag"]
+    assert "Инв. номер" in matches[0].message()
+
+
+def test_check_duplicates_inv_ignores_other_devices(tmp_path: Path) -> None:
+    repo, session, location = _repo(tmp_path)
+    repo.create_device(session.id, "camera", location.id, asset_tag="INV-0001")
+    repo.create_device(session.id, "camera", location.id, asset_tag="INV-0002")
+    parsed = parse_code("INV=INV-0001")
+    matches = check_duplicates(repo, session.id, parsed=parsed)
+    assert len(matches) == 1
