@@ -25,7 +25,7 @@ CONFIG_PATH = APP_BASE / "config.json"
 VOSK_MODEL_DIR = APP_BASE / "model"
 
 # Версия приложения: видна в заголовке окна, настройках и в ПРОЧТИ_МЕНЯ сборки.
-APP_VERSION = "1.6.5"
+APP_VERSION = "1.6.6"
 
 
 @dataclass

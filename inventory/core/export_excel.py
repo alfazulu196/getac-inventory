@@ -101,6 +101,20 @@ def _safe_sheet_name(name: str) -> str:
     return cleaned[:31] or "Лист"
 
 
+def _unit_sort_key(unit: str | None) -> tuple[int, int, str]:
+    """Порядок юнитов: U2 < U5 < U5-U8 < текст < пусто (U1 — низ стойки).
+
+    Дублирует rack_ai.position_sort_key: core не зависит от services.
+    """
+    raw = (unit or "").strip()
+    if not raw:
+        return (2, 0, "")
+    match = re.match(r"u(\d+)", raw, re.IGNORECASE) or re.match(r"(\d+)", raw)
+    if match:
+        return (0, int(match.group(1)), raw)
+    return (1, 0, raw.lower())
+
+
 def _tint(hex_color: str, factor: float = 0.82) -> str:
     """Смягчить цвет для фона строки (ближе к белому)."""
     hex_color = hex_color.lstrip("#")
@@ -386,6 +400,50 @@ def export_session(
             map_rows,
         )
         _autosize(ws_recorders)
+
+    # --- Стойки: раскладка оборудования по шкафам и юнитам (v1.6.6) ---
+    rack_devices = [
+        d for d in devices
+        if d.location and (d.location.rack or "").strip()
+    ]
+    if rack_devices:
+        rack_devices.sort(key=lambda d: (
+            (d.location.building or "").strip(),
+            (d.location.floor or "").strip(),
+            (d.location.room or "").strip(),
+            (d.location.rack or "").strip(),
+            _unit_sort_key(d.location.unit),
+            d.display_id,
+        ))
+        ws_racks = wb.create_sheet("Стойки")
+        rack_rows = []
+        for device in rack_devices:
+            location = device.location
+            brand = (device.manufacturer or "").strip()
+            model = (device.model or "").strip()
+            rack_rows.append(
+                [
+                    location.rack,
+                    location.unit or "",
+                    device_type_name(device.device_type),
+                    " ".join(part for part in (brand, model) if part),
+                    device.serial or "",
+                    device.mac or "",
+                    status_name(device.status),
+                    device.display_id,
+                    location.label(),
+                ]
+            )
+        _write_table(
+            ws_racks,
+            ["Шкаф", "Юнит", "Тип", "Бренд-Модель", "S/N", "MAC", "Статус", "ID", "Локация"],
+            rack_rows,
+        )
+        _autosize(ws_racks)
+        # Тонировка статуса — как на листе «Устройства».
+        for row_cells, device in zip(ws_racks.iter_rows(min_row=2), rack_devices):
+            color = STATUS_BY_CODE.get(device.status, {}).get("color", "#95a5a6")
+            row_cells[6].fill = PatternFill("solid", fgColor=_tint(color))
 
     # --- Сводка ---
     ws_summary = wb.create_sheet("Сводка")

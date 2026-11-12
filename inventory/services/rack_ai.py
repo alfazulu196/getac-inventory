@@ -16,6 +16,18 @@ requests не нужен — только urllib. Функция опциона�
 - сбой конкретной модели → перебор прочих установленных vision-моделей;
 - `keep_alive` — модель остаётся в памяти между кадрами;
 - все попытки пишутся в `data/logs/rack_ai_log.jsonl` (если передан log_dir).
+
+v1.6.6: structured output — в `format` уходит не строка «json», а JSON-схема
+(`{"devices": [...]}` с обязательным `type`); модель физически не может
+вернуть прозу. Деградация трёхступенчатая: схема → простое `format:"json"`
+(старые ollama) → без формата; кроме того, непарсируемый ответ со схемой
+даёт один повтор кадра с `format:"json"`. В журнал пишется, какой формат
+использовался (`format_used`: schema|json|none) — для сравнения качества.
+
+Тот же запрос идёт СТРИМОМ (NDJSON): диалог видит прогресс («получено N
+символов, записей K») по мере генерации, а кнопка «Стоп» обрывает генерацию
+на ближайшем токене (cancel_check проверяется на каждом чанке). Результат
+отмены помечается в RackAnalysis.cancelled, в журнал пишет ok=False.
 """
 from __future__ import annotations
 
@@ -28,7 +40,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 OLLAMA_BASE = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen2.5vl:3b"
@@ -52,6 +64,31 @@ REQUEST_TIMEOUT = 600      # сек: CPU-инференс тягучий, кад
 NUM_PREDICT = 2048         # потолок генерации: защита от «залипания» модели
 KEEP_ALIVE = "30m"         # модель в памяти после кадра: разогрев не сбрасывается
 SHRINK_ATTEMPTS = 3        # пересжатия при ошибке контекста (1280→896→627→439)
+
+# Structured output (v1.6.6): вместо строки «json» в поле format уходит схема —
+# ответ модели жёстко зажат грамматикой llama.cpp, проза невозможна. Поля
+# повторяют промпт; обязательным оставлен только type (остальное модель
+# оставляет пустым, как требует промпт — «не придумывай»).
+_FORMAT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "devices": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string"},
+                    "brand": {"type": "string"},
+                    "model": {"type": "string"},
+                    "position": {"type": "string"},
+                    "detail": {"type": "string"},
+                },
+                "required": ["type"],
+            },
+        },
+    },
+    "required": ["devices"],
+}
 
 _PROMPT_V162 = """Ты помощник полевой инвентаризации. Посмотри на фото серверной
 стойки или телекоммуникационного шкафа. Составь список ЕДИНИЦ ОБОРУДОВАНИЯ,
@@ -147,6 +184,8 @@ class RackAnalysis:
     error: str | None = None
     elapsed_s: float = 0.0
     raw_text: str = ""
+    format_used: str = ""  # schema | json | none — какой format приняла ollama
+    cancelled: bool = False  # пользователь нажал «Стоп»
 
     @property
     def summary(self) -> str:
@@ -263,16 +302,33 @@ def warm_up_model(model: str | None = None) -> str:
 # ----------------------------------------------------------------------------
 # HTTP
 # ----------------------------------------------------------------------------
-def _build_payload(model: str, image_b64: str, use_format: bool = True) -> dict:
+class _Cancelled(Exception):
+    """Пользователь нажал «Стоп» — генерация обрывается на ближайшем чанке."""
+
+
+def _build_payload(
+    model: str,
+    image_b64: str,
+    use_format: bool = True,
+    use_schema: bool = True,
+    stream: bool = True,
+) -> dict:
+    """Payload /api/chat. Формат по ступеням: схема → «json» → без формата.
+
+    Стрим (v1.6.6) — по умолчанию: даёт диалогу живой прогресс и быструю
+    отмену; ответ всё равно собирается целиком до парсинга.
+    """
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": _PROMPT, "images": [image_b64]}],
-        "stream": False,
+        "stream": bool(stream),
         "keep_alive": KEEP_ALIVE,
         "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": NUM_PREDICT},
     }
     if use_format:
-        payload["format"] = "json"  # модель обязана вернуть строгий JSON
+        # v1.6.6: по умолчанию строгая JSON-схема; отказ ollama → «json»;
+        # отказ и на нём → формат снимается совсем (см. analyse_rack_photo).
+        payload["format"] = _FORMAT_SCHEMA if use_schema else "json"
     return payload
 
 
@@ -312,6 +368,54 @@ def _post_chat(payload: dict) -> str:
         raise RuntimeError(f"связь с ollama: {exc}") from exc
     message = body.get("message") or {}
     return str(message.get("content", ""))
+
+
+def _post_chat_stream(
+    payload: dict,
+    on_line: Callable[[dict], None],
+) -> str:
+    """POST /api/chat со stream:true → NDJSON построчно → полный текст.
+
+    on_line вызывается для каждого чанка (может поднять _Cancelled —
+    это рвёт чтение на ближайшем токене). Ошибки HTTP, как и у
+    _post_chat, → RuntimeError (деградация работает так же).
+    """
+    request = urllib.request.Request(
+        f"{OLLAMA_BASE}/api/chat",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    pieces: list[str] = []
+    try:
+        with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", "replace").strip()
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except ValueError:
+                    continue  # мусорные байты между строками не страшны
+                if not isinstance(chunk, dict):
+                    continue
+                if chunk.get("error"):
+                    raise RuntimeError(str(chunk["error"]))
+                on_line(chunk)
+                message = chunk.get("message") or {}
+                pieces.append(str(message.get("content", "")))
+                if chunk.get("done"):
+                    break
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 — тело может отсутствовать
+            pass
+        raise RuntimeError(f"HTTP {exc.code}: {detail or exc.reason}") from exc
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise RuntimeError(f"связь с ollama: {exc}") from exc
+    return "".join(pieces)
 
 
 # ----------------------------------------------------------------------------
@@ -386,8 +490,12 @@ def _write_log(log_dir: str | Path, path: str, analysis: "RackAnalysis") -> None
             "photo": Path(path).name,
             "model": analysis.model_used,
             "ok": analysis.ok,
-            "error": analysis.error,
+            "error": (
+                analysis.error
+                or ("отменено пользователем" if analysis.cancelled else None)
+            ),
             "elapsed_s": round(analysis.elapsed_s, 1),
+            "format_used": analysis.format_used,
             "n_devices": len(analysis.devices),
             "devices": [
                 {
@@ -422,15 +530,23 @@ def analyse_rack_photo(
     model: str | None = None,
     *,
     log_dir: str | Path | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> RackAnalysis:
     """Полный разбор фото стойки. Блокирующий; из Qt вызывать в воркере.
 
     Цепочка деградации: на 400 «context window» кадр до SHRINK_ATTEMPTS раз
-    пересжимается (1280→896→…); на отказ «format» формат снимается; на
-    провал модели — перебор прочих установленных vision-моделей.
+    пересжимается (1280→896→…); на отказ «format» ступени схема→«json»→без
+    формата; на провал модели — перебор прочих установленных vision-моделей.
+
+    Запросы идут стримом (stream:true): on_progress(символов, записей)
+    вызывается на каждом чанке генерации; cancel_check() → True рвёт
+    генерацию на ближайшем токене (RackAnalysis.cancelled).
     """
     analysis = RackAnalysis()
     t0 = time.perf_counter()
+    _PARTS: list[str] = []  # аккумулятор генерации — для живого статуса
+
     try:
         ok, data = _fetch_models()
         if not ok:
@@ -443,27 +559,57 @@ def analyse_rack_photo(
             return analysis
         thumb_cache: dict[int, str] = {}
         use_format = True
+        use_schema = True
         side = MAX_IMAGE_SIDE
         raw = ""
         last_error = ""
         done = False
+
+        def _on_line(chunk: dict) -> None:
+            if cancel_check is not None and cancel_check():
+                raise _Cancelled()
+            message = chunk.get("message") or {}
+            text = str(message.get("content", ""))
+            if not text:
+                return
+            collected = ("".join(_PARTS) + text) if _PARTS else text
+            _PARTS.clear()
+            _PARTS.append(collected)
+            if on_progress is not None:
+                # Грубая оценка числа записей по мере генерации: каждое
+                # «"type"» в накопленном тексте — очередная строка списка.
+                on_progress(len(collected), collected.count('"type"'))
+
         for attempt_model in candidates:
             analysis.model_used = attempt_model
             for _ in range(1 + SHRINK_ATTEMPTS):
                 if side not in thumb_cache:
                     thumb_cache[side] = _load_image_payload(path, max_side=side)
                 try:
-                    raw = _post_chat(
-                        _build_payload(attempt_model, thumb_cache[side], use_format)
+                    raw = _post_chat_stream(
+                        _build_payload(
+                            attempt_model,
+                            thumb_cache[side],
+                            use_format,
+                            use_schema,
+                        ),
+                        _on_line,
                     )
                     done = True
                     break
+                except _Cancelled:
+                    analysis.cancelled = True
+                    return analysis
                 except RuntimeError as exc:
                     last_error = str(exc)
                     verdict = _classify_error_400(str(exc))
-                    if verdict == "no_format" and use_format:
-                        use_format = False
-                        continue
+                    if verdict == "no_format":
+                        if use_format and use_schema:
+                            use_schema = False  # схема не принята → «json»
+                            continue
+                        if use_format:
+                            use_format = False  # и «json» не принят → без формата
+                            continue
                     if verdict == "shrink" and side > 512:
                         side = int(side * 0.7)
                         continue
@@ -473,8 +619,41 @@ def analyse_rack_photo(
         if not done:
             analysis.error = last_error or "обращения к ollama не удались"
             return analysis
+        analysis.format_used = (
+            "schema" if (use_format and use_schema)
+            else "json" if use_format else "none"
+        )
         analysis.raw_text = raw
-        analysis.devices = _parse_devices(raw)
+        try:
+            analysis.devices = _parse_devices(raw)
+        except RuntimeError as parse_exc:
+            if not (use_format and use_schema):
+                analysis.error = f"разбор ответа модели: {parse_exc}"
+                return analysis
+            # Старые ollama могут молча проигнорировать схему-объект и вернуть
+            # прозу: один повтор того же кадра с простым format:"json".
+            use_schema = False
+            _PARTS.clear()
+            try:
+                raw = _post_chat_stream(
+                    _build_payload(
+                        attempt_model, thumb_cache[side], use_format, use_schema
+                    ),
+                    _on_line,
+                )
+            except _Cancelled:
+                analysis.cancelled = True
+                return analysis
+            except RuntimeError as exc:
+                analysis.error = str(exc)
+                return analysis
+            analysis.format_used = "json"
+            analysis.raw_text = raw
+            try:
+                analysis.devices = _parse_devices(raw)
+            except RuntimeError as exc:
+                analysis.error = f"разбор ответа модели: {exc}"
+                return analysis
         analysis.ok = True
         return analysis
     except Exception as exc:  # noqa: BLE001 — весь конвейер мягко деградирует

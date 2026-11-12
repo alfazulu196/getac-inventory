@@ -169,11 +169,16 @@ def test_analyse_unreachable_ollama_degrades(monkeypatch):
 
 
 # ---------------------------------------------------------------- v1.6.1
-def test_build_payload_has_format_and_caps():
+def test_build_payload_format_schema_and_caps():
+    """v1.6.6: по умолчанию JSON-схема; ступени деградации схемы и формата."""
     payload = rack_ai._build_payload("qwen2.5vl:3b", "AAAA", use_format=True)
-    assert payload["format"] == "json"
+    assert payload["format"] == rack_ai._FORMAT_SCHEMA
     assert payload["keep_alive"] == rack_ai.KEEP_ALIVE
     assert payload["options"]["num_predict"] == rack_ai.NUM_PREDICT
+    json_only = rack_ai._build_payload(
+        "m", "AAAA", use_format=True, use_schema=False
+    )
+    assert json_only["format"] == "json"
     without = rack_ai._build_payload("m", "AAAA", use_format=False)
     assert "format" not in without
 
@@ -206,6 +211,7 @@ def test_write_log_jsonl(tmp_path):
         elapsed_s=12.5,
         devices=[RackDevice(type_code="switch", brand="B", model="M")],
         raw_text="{}",
+        format_used="schema",
     )
     rack_ai._write_log(tmp_path, "стойка 1.jpg", analysis)
     lines = (Path(tmp_path) / "rack_ai_log.jsonl").read_text(encoding="utf-8")
@@ -213,6 +219,7 @@ def test_write_log_jsonl(tmp_path):
     assert entry["photo"] == "стойка 1.jpg"
     assert entry["ok"] is True and entry["n_devices"] == 1
     assert entry["devices"][0]["brand"] == "B"
+    assert entry["format_used"] == "schema"
 
 
 class _FakeOllama:
@@ -239,9 +246,20 @@ class _FakeOllama:
                 raise urllib.error.HTTPError(
                     url, 400, "Bad Request", {}, io.BytesIO(step["msg"].encode())
                 )
-            payload = json.dumps(
-                {"message": {"content": step.get("content", "{}")}}
-            ).encode()
+            if "chunks" in step:
+                # Стрим: NDJSON построчно, done в последней строке.
+                lines = [
+                    json.dumps(
+                        {"message": {"content": text},
+                         "done": i == len(step["chunks"]) - 1}
+                    )
+                    for i, text in enumerate(step["chunks"])
+                ]
+                payload = ("\n".join(lines) + "\n").encode()
+            else:
+                payload = json.dumps(
+                    {"message": {"content": step.get("content", "{}")}}
+                ).encode()
         return io.BytesIO(payload)
 
 
@@ -288,12 +306,14 @@ def test_analyse_retries_with_shrunk_image(fake_urlopen, monkeypatch):
     assert analysis.ok is True
     assert len(fake.chat_calls) == 2
     assert sides == [rack_ai.MAX_IMAGE_SIDE, int(rack_ai.MAX_IMAGE_SIDE * 0.7)]
-    # Оба запроса остались с format:json — сжатие кадра формат не трогает.
-    assert fake.chat_calls[0]["format"] == "json"
-    assert fake.chat_calls[1]["format"] == "json"
+    # Оба запроса остались со схемой — сжатие кадра формат не трогает.
+    assert fake.chat_calls[0]["format"] == rack_ai._FORMAT_SCHEMA
+    assert fake.chat_calls[1]["format"] == rack_ai._FORMAT_SCHEMA
+    assert analysis.format_used == "schema"
 
 
-def test_analyse_drops_format_on_format_error(fake_urlopen, monkeypatch):
+def test_analyse_schema_degrades_to_json_on_format_error(fake_urlopen, monkeypatch):
+    """Отказ формата: схема → format:"json"; сжатие кадра продолжает работу."""
     fake = fake_urlopen(
         _FakeOllama(
             ["qwen2.5vl:3b"],
@@ -309,8 +329,129 @@ def test_analyse_drops_format_on_format_error(fake_urlopen, monkeypatch):
     )
     analysis = rack_ai.analyse_rack_photo("photo.jpg")
     assert analysis.ok is True
-    assert fake.chat_calls[0].get("format") == "json"
-    assert "format" not in fake.chat_calls[-1]
+    assert fake.chat_calls[0]["format"] == rack_ai._FORMAT_SCHEMA
+    assert fake.chat_calls[-1]["format"] == "json"
+    assert analysis.format_used == "json"
+
+
+def test_analyse_format_falls_back_schema_json_none(fake_urlopen, monkeypatch):
+    """Старая ollama: не приняла схему, потом и «json» — формат снят совсем."""
+    fake = fake_urlopen(
+        _FakeOllama(
+            ["qwen2.5vl:3b"],
+            [
+                {"ok": False, "msg": "HTTP 400: unknown format option"},
+                {"ok": False, "msg": "HTTP 400: bad format"},
+                {"ok": True, "content": _CANNED_CONTENT},
+            ],
+        )
+    )
+    monkeypatch.setattr(
+        rack_ai, "_load_image_payload", lambda path, max_side=None: "B64"
+    )
+    analysis = rack_ai.analyse_rack_photo("photo.jpg")
+    assert analysis.ok is True
+    assert fake.chat_calls[0]["format"] == rack_ai._FORMAT_SCHEMA
+    assert fake.chat_calls[1]["format"] == "json"
+    assert "format" not in fake.chat_calls[2]
+    assert analysis.format_used == "none"
+
+
+def test_analyse_retries_json_when_schema_output_unparsable(
+    fake_urlopen, monkeypatch
+):
+    """Ollama молча проигнорировала схему → проза: один повтор с «json»."""
+    fake = fake_urlopen(
+        _FakeOllama(
+            ["qwen2.5vl:3b"],
+            [
+                {"ok": True, "content": "На фото три коммутатора."},
+                {"ok": True, "content": _CANNED_CONTENT},
+            ],
+        )
+    )
+    monkeypatch.setattr(
+        rack_ai, "_load_image_payload", lambda path, max_side=None: "B64"
+    )
+    analysis = rack_ai.analyse_rack_photo("photo.jpg")
+    assert analysis.ok is True
+    assert fake.chat_calls[0]["format"] == rack_ai._FORMAT_SCHEMA
+    assert fake.chat_calls[1]["format"] == "json"
+    assert analysis.format_used == "json"
+    assert analysis.devices[0].type_code == "switch"
+
+
+# ------------------------------------------------------------------ v1.6.6
+def test_analyse_streams_chunks_with_progress(fake_urlopen, monkeypatch):
+    """Стрим: текст собирается из NDJSON-чанков, прогресс виден по мере генерации."""
+    fake = fake_urlopen(
+        _FakeOllama(
+            ["qwen2.5vl:3b"],
+            [{"ok": True, "chunks": [
+                _CANNED_CONTENT[:20],
+                _CANNED_CONTENT[20:44],
+                _CANNED_CONTENT[44:],
+            ]}],
+        )
+    )
+    monkeypatch.setattr(
+        rack_ai, "_load_image_payload", lambda path, max_side=None: "B64"
+    )
+    seen: list[tuple[int, int]] = []
+    analysis = rack_ai.analyse_rack_photo(
+        "photo.jpg", on_progress=lambda n, records: seen.append((n, records))
+    )
+    assert analysis.ok is True
+    assert analysis.raw_text == _CANNED_CONTENT
+    assert fake.chat_calls[0]["stream"] is True
+    assert [n for n, _ in seen] == [20, 44, len(_CANNED_CONTENT)]
+    assert seen[-1] == (len(_CANNED_CONTENT), 1)  # одна запись devices
+
+
+def test_analyse_cancelled_mid_stream(fake_urlopen, monkeypatch):
+    """Кнопка «Стоп»: cancel_check обрывает генерацию на ближайшем чанке."""
+    fake_urlopen(
+        _FakeOllama(
+            ["qwen2.5vl:3b"],
+            [{"ok": True, "chunks": ["{\"devices\": [{\"typ", "e\": \"ups\"}]}"]}],
+        )
+    )
+    monkeypatch.setattr(
+        rack_ai, "_load_image_payload", lambda path, max_side=None: "B64"
+    )
+    checks = {"n": 0}
+
+    def cancel_check() -> bool:
+        checks["n"] += 1
+        return checks["n"] >= 2  # отмена срабатывает на втором чанке
+
+    analysis = rack_ai.analyse_rack_photo("photo.jpg", cancel_check=cancel_check)
+    assert analysis.ok is False
+    assert analysis.cancelled is True
+    assert analysis.error is None
+    assert checks["n"] == 2  # третий чанк не читался — генерация оборвана
+
+
+def test_analyse_cancelled_log_marks_reason(tmp_path, fake_urlopen, monkeypatch):
+    """Отменённый разбор в журнале: ok=False, причина «отменено пользователем»."""
+    fake_urlopen(
+        _FakeOllama(
+            ["qwen2.5vl:3b"],
+            [{"ok": True, "chunks": ["{\"devi", "ces\": []}"]}],
+        )
+    )
+    monkeypatch.setattr(
+        rack_ai, "_load_image_payload", lambda path, max_side=None: "B64"
+    )
+    analysis = rack_ai.analyse_rack_photo(
+        "стойка.jpg", log_dir=tmp_path, cancel_check=lambda: True
+    )
+    assert analysis.cancelled is True
+    entry = json.loads(
+        (Path(tmp_path) / "rack_ai_log.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert entry["ok"] is False
+    assert entry["error"] == "отменено пользователем"
 
 
 def test_analyse_falls_back_to_next_vision_model(fake_urlopen, monkeypatch):
@@ -350,3 +491,4 @@ def test_analyse_logs_every_way(tmp_path, fake_urlopen, monkeypatch):
     assert entry["model"] == "qwen2.5vl:3b"
     assert entry["photo"] == "стойка.jpg"
     assert entry["n_devices"] == 1
+    assert entry["format_used"] == "schema"

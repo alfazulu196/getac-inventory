@@ -119,6 +119,11 @@ class RackDialog(QDialog):
         self.row_btn.setToolTip("Вписать юнит вручную, если модель его пропустила")
         self.row_btn.clicked.connect(self._add_empty_row)
         buttons.addWidget(self.row_btn)
+        self.stop_btn = secondary_button("⏹ Стоп", height=52, font_size=15)
+        self.stop_btn.setToolTip("Прервать разбор — генерация обрывается на ближайшем чанке")
+        self.stop_btn.clicked.connect(self._on_stop)
+        self.stop_btn.hide()
+        buttons.addWidget(self.stop_btn)
         buttons.addStretch(1)
         self.cancel_btn = secondary_button("Отмена", height=52, font_size=15)
         self.cancel_btn.clicked.connect(self.reject)
@@ -188,13 +193,30 @@ class RackDialog(QDialog):
         detach_running(self._worker)
         self._worker = RackAiWorker(path, self, log_dir=self.paths.get("logs"))
         self._worker.analysed.connect(self._on_analysis)
+        self._worker.progress.connect(self._on_progress)
         self._set_busy(True)
         self._worker.start()
+
+    def _on_progress(self, text: str) -> None:
+        """Живой статус генерации из воркера (стрим)."""
+        worker = self._worker
+        if worker is not None and worker.isRunning():
+            self.status_label.setText(text)
+            self.status_label.setStyleSheet("color: #f1c40f;")
+
+    def _on_stop(self) -> None:
+        worker = self._worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+        self.stop_btn.setEnabled(False)
+        self.status_label.setText("⏹ Останавливаю разбор…")
 
     def _set_busy(self, busy: bool) -> None:
         self.shot_btn.setEnabled(not busy)
         self.row_btn.setEnabled(not busy)
         self.create_btn.setEnabled(False)
+        self.stop_btn.setVisible(busy)
+        self.stop_btn.setEnabled(True)
         if busy:
             self.status_label.setText(
                 "🖥 Ищу юниты на фото (локальный ИИ, на CPU до 2–3 минут)..."
@@ -206,7 +228,15 @@ class RackDialog(QDialog):
         self._worker = None
         self.shot_btn.setEnabled(True)
         self.row_btn.setEnabled(True)
+        self.stop_btn.hide()
+        self.stop_btn.setEnabled(True)
         if analysis is None:
+            return
+        if getattr(analysis, "cancelled", False):
+            self.status_label.setText(
+                "⏹ Разбор отменён — можно снять кадр заново или вписать юниты вручную."
+            )
+            self.status_label.setStyleSheet("color: #95a5a6;")
             return
         self._analysis = analysis
         seconds = f"{analysis.elapsed_s:.0f} с"
@@ -448,6 +478,8 @@ class RackDialog(QDialog):
 
     # ------------------------------------------------------------------
     def reject(self) -> None:
+        if self._worker is not None:
+            self._worker.cancel()  # стрим обрывается на ближайшем чанке
         detach_running(self._worker)
         self._worker = None
         detach_running(self._warm_worker)
@@ -455,6 +487,8 @@ class RackDialog(QDialog):
         super().reject()
 
     def closeEvent(self, event) -> None:
+        if self._worker is not None:
+            self._worker.cancel()
         detach_running(self._worker)
         self._worker = None
         detach_running(self._warm_worker)

@@ -29,7 +29,8 @@ def test_export_creates_sheets_and_rows(tmp_path):
     assert output.exists()
 
     wb = load_workbook(output)
-    assert wb.sheetnames == ["Титул", "Устройства", "Связи", "Сводка", "Проблемы"]
+    # location в этом тесте создана с rack="2" → лист «Стойки» заполняется.
+    assert wb.sheetnames == ["Титул", "Устройства", "Связи", "Стойки", "Сводка", "Проблемы"]
 
     titul = wb["Титул"]
     assert titul["A2"].value == "Объект №1"
@@ -54,6 +55,53 @@ def test_export_creates_sheets_and_rows(tmp_path):
     ws_problems = wb["Проблемы"]
     assert ws_problems.max_row >= 2
 
+    db.close()
+
+
+def test_export_racks_sheet_order_and_columns(tmp_path):
+    """Лист «Стойки»: сортировка по юнитам, колонки, устройства без шкафа.
+
+    Юнит — поле локации: позиция шкафа = локация с rack+unit.
+    """
+    db = Database(tmp_path / "racks.db")
+    repo = InventoryRepository(db)
+    session = repo.create_session("Объект", "Инспектор")
+    loose_loc = repo.create_location(session.id, "1", "101")  # без шкафа
+
+    def _unit_loc(unit: str) -> str:
+        return repo.create_location(
+            session.id, "2", "204", "Корпус А", "Ш2", unit
+        ).id
+
+    ups = repo.create_device(session.id, "ups", _unit_loc("U10"),
+                             manufacturer="APC", model="SMT1500", serial="UPS001")
+    switch = repo.create_device(session.id, "switch", _unit_loc("U2"),
+                                manufacturer="D-Link", model="DES-1210",
+                                serial="SW001", mac="AA:BB:CC:DD:EE:01")
+    patch = repo.create_device(session.id, "patch", _unit_loc("U5"),
+                               model="24 порта")
+    loose = repo.create_device(session.id, "camera", loose_loc.id, serial="CAM001")
+    free = repo.create_device(session.id, "other", _unit_loc("нижняя часть"))
+
+    output = export_session(repo, session.id, tmp_path / "racks.xlsx")
+    wb = load_workbook(output)
+    assert wb.sheetnames == [
+        "Титул", "Устройства", "Связи", "Стойки", "Сводка", "Проблемы",
+    ]
+
+    ws = wb["Стойки"]
+    headers = [ws.cell(row=1, column=c).value for c in range(1, 10)]
+    assert headers == [
+        "Шкаф", "Юнит", "Тип", "Бренд-Модель", "S/N", "MAC", "Статус", "ID", "Локация",
+    ]
+    ids = [ws.cell(row=r, column=8).value for r in range(2, ws.max_row + 1)]
+    # Числовая сортировка юнитов (U2 < U5 < U10), текст — после, без шкафа — нет.
+    assert ids == [switch.display_id, patch.display_id, ups.display_id, free.display_id]
+    assert loose.display_id not in ids  # устройство без шкафа не попадает на лист
+    # Бренд-Модель склеена
+    first_row = [ws.cell(row=2, column=c).value for c in range(1, 9)]
+    assert first_row[3] == "D-Link DES-1210"
+    assert first_row[0] == "Ш2"
     db.close()
 
 
