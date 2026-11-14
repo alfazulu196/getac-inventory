@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QGroupBox,
@@ -44,6 +45,7 @@ from inventory.core.parser import parse_code
 from inventory.core.repository import InventoryRepository
 from inventory.services.photo_intel import photo_intel_available
 from inventory.services.photo_server import PhotoServer
+from inventory.services.qr_tags import detect_qr_text
 from inventory.services.rack_ai import ollama_status
 from inventory.services.scanner import (
     KeyboardScannerBuffer,
@@ -61,6 +63,7 @@ from inventory.ui.phone_link_dialog import PhoneLinkDialog
 from inventory.ui.photo_dialog import PhotoCaptureDialog
 from inventory.ui.photo_intel_workers import PhotoIntelWorker, detach_running
 from inventory.ui.rack_dialog import RackDialog
+from inventory.ui.reference_dialog import ReferenceDialog
 from inventory.ui.settings_dialog import SettingsDialog
 from inventory.ui.voice_workers import VoiceLoadWorker, VoiceRecognizeWorker
 from inventory.ui.widgets import (
@@ -185,6 +188,14 @@ class SurveyScreen(QWidget):
         self.help_btn.setToolTip("Справка: шпаргалка по работе в поле")
         self.help_btn.clicked.connect(self.open_help)
         top.addWidget(self.help_btn)
+
+        self.reference_btn = secondary_button("📚", height=52, font_size=20)
+        self.reference_btn.setFixedWidth(48)
+        self.reference_btn.setToolTip(
+            "Справочник: S/N и MAC, кабели и PoE, стойки и юниты"
+        )
+        self.reference_btn.clicked.connect(self.open_reference)
+        top.addWidget(self.reference_btn)
         root.addLayout(top)
 
         # Строка состояния: батарея, сканер, голос.
@@ -278,6 +289,9 @@ class SurveyScreen(QWidget):
         scan_layout.addWidget(self.last_result)
 
         self.laser_btn = big_button("🔥 ЗАЖЕЧЬ ЛАЗЕР", "#d35400", height=84, font_size=24)
+        self.laser_btn.setToolTip(
+            "Программный триггер сканера: 3 импульса лазера (клавиша S)."
+        )
         self.laser_btn.clicked.connect(self.activate_laser)
         scan_layout.addWidget(self.laser_btn)
 
@@ -313,6 +327,16 @@ class SurveyScreen(QWidget):
                 "Распознавание стойки недоступно: " + _rack_reason +
                 "\nОстальные функции работают, юниты вписывайте вручную."
             )
+        scan_layout.addWidget(self.rack_btn)
+        self.qr_tag_btn = secondary_button(
+            "🏷 Бирка QR по фото", height=44, font_size=14
+        )
+        self.qr_tag_btn.setToolTip(
+            "Фото напечатанной бирки → QR-код распознаётся локально,\n"
+            "дальше код обрабатывается как отсканированный. Офлайн."
+        )
+        self.qr_tag_btn.clicked.connect(self.scan_qr_tag)
+        scan_layout.addWidget(self.qr_tag_btn)
         center.addWidget(scan_box)
 
         active_box = QGroupBox("Активное устройство")
@@ -334,9 +358,15 @@ class SurveyScreen(QWidget):
         active_buttons = QHBoxLayout()
         active_buttons.setSpacing(6)
         self.note_btn = big_button("🎤 Заметка", "#2e7d32", height=50, font_size=15)
+        self.note_btn.setToolTip(
+            "Голосовая заметка к активному устройству (клавиша V)."
+        )
         self.note_btn.clicked.connect(self.toggle_voice_note)
         active_buttons.addWidget(self.note_btn)
         self.photo_btn = secondary_button("📷 Фото", height=50, font_size=14)
+        self.photo_btn.setToolTip(
+            "Фото активного устройства с камеры ноутбука (клавиша F)."
+        )
         self.photo_btn.clicked.connect(self.take_photo)
         active_buttons.addWidget(self.photo_btn)
         self.phone_btn = secondary_button("📱 Телефон", height=50, font_size=13)
@@ -647,6 +677,47 @@ class SurveyScreen(QWidget):
             return
         self.manual_edit.clear()
         self.process_code(text, source="manual")
+
+    def keyPressEvent(self, event) -> None:
+        """Горячие клавиши обхода: S — лазер, V — заметка голосом, F — фото.
+
+        QLineEdit съедает буквы сам (ввод кода не конфликтует); QListWidget
+        жрёт буквы под keyboard-search — дубликат не сработает, приемлемо.
+        """
+        if event.modifiers() != Qt.KeyboardModifier.NoModifier:
+            super().keyPressEvent(event)
+            return
+        key = event.key()
+        if key == Qt.Key.Key_S:
+            self.activate_laser()
+        elif key == Qt.Key.Key_V:
+            self.toggle_voice_note()
+        elif key == Qt.Key.Key_F:
+            self.take_photo()
+        else:
+            super().keyPressEvent(event)
+
+    def scan_qr_tag(self) -> None:
+        """Фото печатной бирки → QR → тот же путь, что у сканера (source='qr')."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Фото бирки с QR-кодом",
+            str(self.paths["photos"]),
+            "Изображения (*.png *.jpg *.jpeg *.bmp *.webp);;Все файлы (*)",
+        )
+        if not path:
+            return
+        code = detect_qr_text(path)
+        if not code:
+            QMessageBox.information(
+                self,
+                "Бирка QR",
+                "QR-код не распознан.\nСнимите бирку ближе и без бликов, "
+                "код должен попадать в кадр целиком.",
+            )
+            return
+        self.last_result.setText(f"QR считан с бирки: {code}")
+        self.process_code(code, source="qr")
 
     def process_code(self, raw: str, source: str = "com") -> None:
         if self.session.status != "active":
@@ -1070,6 +1141,9 @@ class SurveyScreen(QWidget):
 
     def open_help(self) -> None:
         HelpDialog(self).exec()
+
+    def open_reference(self) -> None:
+        ReferenceDialog(self).exec()
 
     def finish_session(self) -> None:
         dialog = FinishDialog(self.repo, self.session, self.paths, self)

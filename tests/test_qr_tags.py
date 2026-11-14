@@ -1,5 +1,5 @@
 # tests/test_qr_tags.py
-"""Тесты QR-бирок: код бирки, QR-картинка, PDF-A4, реестр ИНВ, PNG."""
+"""Тесты QR-бирок: код бирки, QR-картинка, скан бирки по фото, PDF-A4, реестр ИНВ."""
 from __future__ import annotations
 
 import os
@@ -7,7 +7,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtGui import QGuiApplication  # noqa: E402
+from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from inventory.core.db import Database  # noqa: E402
 from inventory.core.duplicates import check_duplicates  # noqa: E402
@@ -16,6 +16,7 @@ from inventory.core.parser import parse_code  # noqa: E402
 from inventory.core.repository import InventoryRepository  # noqa: E402
 from inventory.services.qr_tags import (  # noqa: E402
     assign_tag_ids,
+    detect_qr_text,
     generate_tags_pdf,
     qr_image,
     render_label_png,
@@ -26,11 +27,11 @@ _APP = None
 
 
 def _app():
-    """QGuiApplication один на сессию тестов (нужен QImage/QPdfWriter)."""
+    """QApplication один на сессию тестов (QImage, QPdfWriter и виджеты)."""
     global _APP
-    if QGuiApplication.instance() is None:
-        _APP = QGuiApplication([])
-    return QGuiApplication.instance()
+    if QApplication.instance() is None:
+        _APP = QApplication([])
+    return QApplication.instance()
 
 
 def _device(**overrides) -> Device:
@@ -100,6 +101,47 @@ def test_parse_inv_roundtrip_through_parser() -> None:
                                          asset_tag="INV-0007")))
     assert parsed.code_type.value == "qr"
     assert parsed.fields.get("asset_tag") == "INV-0007"
+
+
+# ------------------------------------------------- скан бирки по фото
+def test_detect_qr_reads_tag_file_roundtrip(tmp_path: Path) -> None:
+    """Фича v1.6.7: QR с файла бирки → текст → родной парсер понимает."""
+    _app()
+    text = tag_code(_device())
+    path = tmp_path / "бирка_CAM-001.png"  # кириллица в имени — осознанно
+    assert qr_image(text, size_px=240).save(str(path))
+    detected = detect_qr_text(path)
+    assert detected == text
+    parsed = parse_code(detected)
+    assert parsed.code_type.value == "qr"
+    assert parsed.serial == "ABC12345"
+
+
+def test_detect_qr_small_frame_still_decodes(tmp_path: Path) -> None:
+    """Мелкий/далёкий кадр: контракт — текст возвращается (помогает повтор ×2)."""
+    _app()
+    path = tmp_path / "мелкий.png"
+    assert qr_image("INV=INV-0007", size_px=64).save(str(path))
+    assert detect_qr_text(path) == "INV=INV-0007"
+
+
+def test_detect_qr_no_qr_returns_none(tmp_path: Path) -> None:
+    _app()
+    import cv2
+    import numpy as np
+
+    path = tmp_path / "белый_лист.png"
+    blank = np.full((200, 300), 255, dtype=np.uint8)
+    cv2.imencode(".png", blank)[1].tofile(str(path))  # не imread: кириллица
+    assert detect_qr_text(path) is None
+
+
+def test_detect_qr_missing_file_and_garbage(tmp_path: Path) -> None:
+    """Не читается / не картинка → None, никакого исключения наружу."""
+    assert detect_qr_text(tmp_path / "нет_такого.png") is None
+    junk = tmp_path / "мусор.png"
+    junk.write_bytes(b"\x00\x01not an image")
+    assert detect_qr_text(junk) is None
 
 
 # --------------------------------------------------------------- PDF-A4

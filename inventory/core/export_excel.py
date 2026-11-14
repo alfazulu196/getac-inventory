@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import re
+import shutil
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from tempfile import mkdtemp
 from typing import Any
+from uuid import uuid4
 
 from openpyxl import Workbook
+from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+
+try:  # Pillow уже в exe-бандле (через qrcode); без него — только ссылки
+    from PIL import Image as PILImage
+except ImportError:  # pragma: no cover - полевая деградация
+    PILImage = None
 
 from inventory.config import APP_VERSION, STATUS_BY_CODE, device_type_name, status_name
 from inventory.core.baseline import compare_baseline
@@ -125,6 +134,22 @@ def _tint(hex_color: str, factor: float = 0.82) -> str:
         round(int(ch + (255 - int(ch)) * factor)) for ch in (r, g, b)
     )
     return f"{r:02X}{g:02X}{b:02X}"
+
+
+def _make_thumbnail(source: Path, thumb_dir: Path) -> Path | None:
+    """PNG-миниатюра фото (~200×128) для листа «Фото»; None — не картинка."""
+    if PILImage is None:
+        return None
+    try:
+        with PILImage.open(source) as img:
+            img.thumbnail((200, 128))
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            out = thumb_dir / f"{source.stem or 'photo'}_{uuid4().hex[:8]}.png"
+            img.save(out, "PNG")
+            return out
+    except Exception:  # noqa: BLE001 — битый файл не должен ронять отчёт
+        return None
 
 
 def _write_table(ws, headers: list[str], rows: list[list[Any]]) -> None:
@@ -256,11 +281,24 @@ def export_session(
     summary = repo.get_summary(session_id)
 
     photos_by_device: dict[str, list[str]] = {}
+    # (ID, тип, место, путь) для листа «Фото» — полный путь каждого фото.
+    photo_entries: list[tuple[str, str, str, str]] = []
     for device in devices:
-        names = [Path(photo.path).name for photo in repo.list_photos(device.id)]
-        if not names and device.photo_path:
-            names = [Path(device.photo_path).name]
-        photos_by_device[device.id] = names
+        photos = repo.list_photos(device.id)
+        paths = [photo.path for photo in photos]
+        if not paths and device.photo_path:
+            paths = [device.photo_path]
+        photos_by_device[device.id] = [Path(path).name for path in paths]
+        place = device.location.label() if device.location else ""
+        for path in paths:
+            photo_entries.append(
+                (
+                    device.display_id,
+                    device_type_name(device.device_type),
+                    place,
+                    path,
+                )
+            )
     photo_paths = {
         photo.path: Path(photo.path).name
         for device in devices
@@ -614,16 +652,57 @@ def export_session(
     )
     _autosize(ws_problems)
 
+    # --- Фото: миниатюры + ссылки на оригиналы (v1.6.7) ---
+    thumb_dir: Path | None = None
+    if photo_entries:
+        ws_photos = wb.create_sheet("Фото")
+        _write_table(
+            ws_photos,
+            ["ID", "Тип", "Место", "Миниатюра", "Файл"],
+            [
+                [device_id, type_name, place, "", ""]
+                for device_id, type_name, place, _path in photo_entries
+            ],
+        )
+        ws_photos.column_dimensions["D"].width = 30  # под миниатюру
+        ws_photos.column_dimensions["E"].width = 26
+        if PILImage is not None:
+            thumb_dir = Path(mkdtemp(prefix="inv_thumbs_"))
+        for row_index, row_cells, entry in zip(
+            range(2, 2 + len(photo_entries)),
+            ws_photos.iter_rows(min_row=2),
+            photo_entries,
+        ):
+            source = Path(entry[3])
+            link = row_cells[4]
+            link.value = source.name
+            link.hyperlink = str(source)
+            link.font = Font(color="0563C1", underline="single")
+            if thumb_dir is None:
+                row_cells[3].value = "—"
+                continue
+            thumb = _make_thumbnail(source, thumb_dir)
+            if thumb is None:
+                row_cells[3].value = "—"
+                continue
+            ws_photos.row_dimensions[row_index].height = 96
+            ws_photos.add_image(XLImage(str(thumb)), f"D{row_index}")
+
     _fill_titul(wb["Титул"], session, summary, comparison, repo=repo)
 
     try:
         wb.save(output_path)
-        return output_path
+        return_path = output_path
     except PermissionError:
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         fallback = output_path.with_name(f"{output_path.stem}_{stamp}{output_path.suffix}")
         wb.save(fallback)
-        return fallback
+        return_path = fallback
+    finally:
+        # Миниатюры openpyxl читает из файлов при save — чистим строго после.
+        if thumb_dir is not None:
+            shutil.rmtree(thumb_dir, ignore_errors=True)
+    return return_path
 
 
 def suggested_export_path(exports_dir: Path, session_name: str, object_name: str) -> Path:

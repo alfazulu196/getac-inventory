@@ -98,6 +98,28 @@ def qr_image(text: str, size_px: int = 320) -> QImage:
 _FONT_FAMILY = "Segoe UI"  # есть на любой Windows, полная кириллица
 
 
+def detect_qr_text(image_path: str | Path) -> str | None:
+    """QR-код на фото бирки → текст; None — не найден или файл не читается.
+
+    np.fromfile + cv2.imdecode: cv2.imread не открывает пути с кириллицей.
+    """
+    try:
+        data = np.fromfile(str(image_path), dtype=np.uint8)
+        img = cv2.imdecode(data, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return None
+        detector = cv2.QRCodeDetector()
+        text, _, _ = detector.detectAndDecode(img)
+        if not text:
+            # Мелкий/далёкий кадр: увеличение ×2 часто дожимает распознавание.
+            big = cv2.resize(img, None, fx=2, fy=2,
+                             interpolation=cv2.INTER_CUBIC)
+            text, _, _ = detector.detectAndDecode(big)
+        return text.strip() or None
+    except (OSError, ValueError, cv2.error):
+        return None
+
+
 def _font(point_size: float, *, bold: bool = False) -> QFont:
     """Явное семейство: без него offscreen-рендер рисует кириллицу «тофу»."""
     font = QFont(_FONT_FAMILY)

@@ -27,6 +27,7 @@ from inventory.core.models import Session
 from inventory.core.repository import InventoryRepository
 from inventory.services.backup import backup_database, prune_backups
 from inventory.ui.import_session_dialog import ImportSessionDialog
+from inventory.ui.reference_dialog import ReferenceDialog
 from inventory.ui.widgets import big_button, format_datetime, secondary_button
 
 SESSION_STATUS_NAMES = {
@@ -291,6 +292,13 @@ class StartScreen(QWidget):
 
         bottom = QHBoxLayout()
         bottom.addStretch(1)
+        self.reference_btn = secondary_button("📚 Справочник", height=44, font_size=14)
+        self.reference_btn.setToolTip(
+            "Полевые шпаргалки: где искать S/N и MAC, расцветка кабелей и PoE, "
+            "стойки и юниты"
+        )
+        self.reference_btn.clicked.connect(self._open_reference)
+        bottom.addWidget(self.reference_btn)
         self.quit_btn = secondary_button("Выход", height=44, font_size=14)
         self.quit_btn.clicked.connect(self.quit_requested.emit)
         bottom.addWidget(self.quit_btn)
@@ -331,6 +339,9 @@ class StartScreen(QWidget):
         active = self.repo.get_active_session()
         if active:
             self.session_selected.emit(active)
+
+    def _open_reference(self) -> None:
+        ReferenceDialog(self).exec()
 
     def _create_session(self) -> None:
         contractor = self.contractor_combo.currentText().strip() or None

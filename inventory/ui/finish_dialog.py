@@ -1,7 +1,9 @@
 # inventory/ui/finish_dialog.py
-"""Завершение сессии: сводка, экспорт, закрытие."""
+"""Завершение сессии: сводка, экспорт, акт PDF, чек-лист докрутки, закрытие."""
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QUrl
@@ -23,6 +25,7 @@ from inventory.core.export_excel import export_session, suggested_export_path
 from inventory.core.models import Session
 from inventory.core.repository import InventoryRepository
 from inventory.services.backup import backup_database, prune_backups
+from inventory.services.report_pdf import generate_act_pdf, generate_followup_pdf
 from inventory.ui.widgets import big_button, format_datetime, secondary_button
 
 
@@ -124,6 +127,22 @@ class FinishDialog(QDialog):
         self.open_folder_btn.clicked.connect(self._open_export_folder)
         self.open_folder_btn.setEnabled(False)
         buttons.addWidget(self.open_folder_btn)
+
+        self.act_btn = secondary_button("📄 Акт PDF", height=56, font_size=15)
+        self.act_btn.setToolTip(
+            "Печатный документ для заказчика: шапка объекта, таблица "
+            "оборудования, строка подписей."
+        )
+        self.act_btn.clicked.connect(self._export_act)
+        buttons.addWidget(self.act_btn)
+
+        self.checklist_btn = secondary_button("✅ Чек-лист докрутки", height=56, font_size=15)
+        self.checklist_btn.setToolTip(
+            "План на следующий выезд: устройства, где не хватает данных "
+            "(S/N, MAC, фото, подтверждение), с клеткой для отметки."
+        )
+        self.checklist_btn.clicked.connect(self._export_checklist)
+        buttons.addWidget(self.checklist_btn)
         buttons.addStretch(1)
 
         self.export_btn = big_button("📊 Экспорт Excel", "#8e44ad", height=56, font_size=17)
@@ -271,6 +290,52 @@ class FinishDialog(QDialog):
             self.open_folder_btn.setEnabled(True)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Экспорт", f"Не удалось сформировать отчёт:\n{exc}")
+
+    def _pdf_export_path(self, prefix: str) -> Path:
+        safe = re.sub(
+            r"[^\w\-]+", "_",
+            f"{self.session.object_name}_{self.session.name}",
+            flags=re.UNICODE,
+        ).strip("_")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return Path(self.paths["exports"]) / f"{prefix}_{safe or 'session'}_{stamp}.pdf"
+
+    def _export_act(self) -> None:
+        try:
+            output = self._pdf_export_path("act")
+            devices = self.repo.list_devices(self.session.id)
+            path = generate_act_pdf(
+                self.session, devices, output, repo=self.repo)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(
+                self, "Акт PDF", f"Не удалось сформировать акт:\n{exc}")
+            return
+        self.export_status.setText(f"Акт сохранён: {path}")
+        self.export_status.setStyleSheet("color: #2ecc71; font-size: 15px;")
+        self.open_folder_btn.setEnabled(True)
+
+    def _export_checklist(self) -> None:
+        try:
+            output = self._pdf_export_path("dokrutka")
+            devices = self.repo.list_devices(self.session.id)
+            path = generate_followup_pdf(self.session, devices, output)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(
+                self, "Чек-лист докрутки",
+                f"Не удалось сформировать чек-лист:\n{exc}")
+            return
+        items = sum(
+            1 for device in devices
+            if (not (device.serial or "").strip()
+                or not (device.mac or "").strip()
+                or device.device_type in ("camera", "ap")
+                and not device.upstream_device_id
+                or not device.is_verified)
+        )
+        self.export_status.setText(
+            f"Чек-лист сохранён: {path} (позиций: {items})")
+        self.export_status.setStyleSheet("color: #2ecc71; font-size: 15px;")
+        self.open_folder_btn.setEnabled(True)
 
     def _open_export_folder(self) -> None:
         if self.exported_path:

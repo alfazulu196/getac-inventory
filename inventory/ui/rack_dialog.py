@@ -9,9 +9,10 @@
 """
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -40,6 +41,8 @@ _TYPE_INDEX = {t.code: i for i, t in enumerate(DEVICE_TYPES)}
 
 _COL_CHECK, _COL_TYPE, _COL_NAME, _COL_POS, _COL_NOTE = 0, 1, 2, 3, 4
 _HEADERS = ["", "Тип", "Бренд/модель", "Юнит", "Что видно"]
+
+DRAFT_KEY = "rack_draft"  # settings: {session_id, location_id, rows, saved_at}
 
 
 class RackDialog(QDialog):
@@ -73,7 +76,90 @@ class RackDialog(QDialog):
         self.setWindowTitle("🖥 Стойка по фото (ИИ)")
         self.setMinimumSize(980, 640)
         self._build_ui()
-        self._begin()
+        self._init_draft()
+        if self._try_restore_draft():
+            # Модель пусть греется для «🔁 Ещё кадр», камеру не открываем.
+            ok, _info = ollama_status()
+            if ok:
+                self._start_warmup()
+        else:
+            self._begin()
+
+    # ------------------------------------------------------------------
+    # Черновик: автосохранение и восстановление
+    # ------------------------------------------------------------------
+    def _init_draft(self) -> None:
+        self._loading = False  # флаг: ресторация строк — не ловить itemChanged
+        self._draft_timer = QTimer(self)
+        self._draft_timer.setSingleShot(True)
+        self._draft_timer.setInterval(800)  # дебаунс правок
+        self._draft_timer.timeout.connect(self._save_draft)
+        self.table.itemChanged.connect(self._on_item_changed)
+
+    def _on_item_changed(self, _item) -> None:
+        if not self._loading:
+            self._draft_timer.start()
+
+    def _save_draft(self) -> None:
+        rows = self._rows_snapshot()
+        if not rows:
+            return
+        try:
+            self.repo.set_setting(
+                DRAFT_KEY,
+                {
+                    "session_id": self.session_id,
+                    "location_id": self.location.id if self.location else None,
+                    "rows": rows,
+                    "saved_at": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
+        except Exception:  # noqa: BLE001 — черновик не должен ронять диалог
+            pass
+
+    def _clear_draft(self) -> None:
+        try:
+            self.repo.set_setting(DRAFT_KEY, None)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _try_restore_draft(self) -> bool:
+        """Черновик этой сессии? → вопрос и восстановление строк. → True."""
+        try:
+            draft = self.repo.get_setting(DRAFT_KEY)
+        except Exception:  # noqa: BLE001
+            draft = None
+        if not isinstance(draft, dict) or draft.get("session_id") != self.session_id:
+            return False
+        rows = draft.get("rows")
+        if not isinstance(rows, list) or not rows:
+            return False
+        saved = str(draft.get("saved_at") or "").replace("T", " ")[:16]
+        answer = QMessageBox.question(
+            self,
+            "Черновик стойки",
+            f"Найден незавершённый черновик стойки ({len(rows)} строк"
+            + (f", сохранён {saved}" if saved else "")
+            + ").\nВосстановить?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self._clear_draft()
+            return False
+        self._loading = True
+        try:
+            self._rewrite_rows([dict(row) for row in rows if isinstance(row, dict)])
+        finally:
+            self._loading = False
+        self.create_btn.setEnabled(True)
+        self._update_create_caption()
+        self.status_label.setText(
+            "♻️ Черновик восстановлен — продолжайте или снимите стойку "
+            "заново («🔁 Ещё кадр»)."
+        )
+        self.status_label.setStyleSheet("color: #2ecc71;")
+        return True
 
     # ------------------------------------------------------------------
     # UI
@@ -268,6 +354,7 @@ class RackDialog(QDialog):
         self.status_label.setStyleSheet("color: #2ecc71;")
         self.create_btn.setEnabled(self.table.rowCount() > 0)
         self._update_create_caption()
+        self._save_draft()  # находка пережила бы краш — сохраняем сразу
 
     # ------------------------------------------------------------------
     # Таблица
@@ -395,6 +482,7 @@ class RackDialog(QDialog):
         self._order_rows_by_position()
         self.create_btn.setEnabled(True)
         self._update_create_caption()
+        self._save_draft()
 
     def _update_create_caption(self) -> None:
         selected = self._selected_rows()
@@ -466,6 +554,7 @@ class RackDialog(QDialog):
             return
         self.created = len(created)
         self.created_devices = created
+        self._clear_draft()  # черновик исполнен
         self.accept()
 
     @staticmethod
@@ -484,6 +573,8 @@ class RackDialog(QDialog):
         self._worker = None
         detach_running(self._warm_worker)
         self._warm_worker = None
+        if self.table.rowCount():
+            self._save_draft()  # правки переживают закрытие
         super().reject()
 
     def closeEvent(self, event) -> None:
@@ -493,4 +584,6 @@ class RackDialog(QDialog):
         self._worker = None
         detach_running(self._warm_worker)
         self._warm_worker = None
+        if self.table.rowCount():
+            self._save_draft()
         super().closeEvent(event)

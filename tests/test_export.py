@@ -136,13 +136,26 @@ def test_export_with_baseline_and_photos(tmp_path):
     )
     photo_path = tmp_path / "photos" / "CAM-001_1.jpg"
     photo_path.parent.mkdir(parents=True, exist_ok=True)
-    photo_path.write_bytes(b"\xff\xd8\xffstub")
+    # Настоящий мини-джипег: лист «Фото» вставит рабочую миниатюру.
+    from PIL import Image
+
+    Image.new("RGB", (40, 30), (120, 160, 90)).save(photo_path, "JPEG")
     repo.add_photo(camera.id, str(photo_path))
     repo.update_device(camera.id, photo_path=str(photo_path))
 
     output = export_session(repo, session.id, tmp_path / "report2.xlsx")
     wb2 = load_workbook(output)
-    assert wb2.sheetnames == ["Титул", "Устройства", "Связи", "Сводка", "Сверка", "Проблемы"]
+    assert wb2.sheetnames == [
+        "Титул", "Устройства", "Связи", "Сводка", "Сверка", "Проблемы", "Фото",
+    ]
+
+    ws_photos = wb2["Фото"]
+    assert [c.value for c in ws_photos[1]] == ["ID", "Тип", "Место", "Миниатюра", "Файл"]
+    assert ws_photos.cell(row=2, column=1).value == "CAM-001"
+    file_cell = ws_photos.cell(row=2, column=5)
+    assert file_cell.value == "CAM-001_1.jpg"
+    assert file_cell.hyperlink is not None
+    assert len(ws_photos._images) == 1  # миниатюра реально встроена
 
     ws_compare = wb2["Сверка"]
     verdicts = {ws_compare.cell(row=r, column=1).value for r in range(2, ws_compare.max_row + 1)}

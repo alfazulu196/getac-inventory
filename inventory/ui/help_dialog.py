@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from inventory.config import APP_VERSION
+from inventory.ui.reference_dialog import ReferenceDialog
 
 _HELP_TEXT = """
 <h2>Как пользоваться: короткая шпаргалка</h2>
@@ -112,6 +113,13 @@ class HelpDialog(QDialog):
         layout.addWidget(footer)
 
         buttons = QHBoxLayout()
+        reference_button = QPushButton("📚 Справочник")
+        reference_button.setMinimumHeight(44)
+        reference_button.setToolTip(
+            "Где искать S/N и MAC, расцветка кабелей и PoE, стойки и юниты"
+        )
+        reference_button.clicked.connect(self._open_reference)
+        buttons.addWidget(reference_button)
         buttons.addStretch(1)
         close_button = QPushButton("Понятно")
         close_button.setMinimumHeight(44)
@@ -119,3 +127,6 @@ class HelpDialog(QDialog):
         close_button.clicked.connect(self.accept)
         buttons.addWidget(close_button)
         layout.addLayout(buttons)
+
+    def _open_reference(self) -> None:
+        ReferenceDialog(self).exec()
