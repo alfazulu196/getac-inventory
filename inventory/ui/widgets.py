@@ -108,11 +108,176 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
 }
 """
 
+# Высококонтрастная «полевая» тема (v1.6.8): чёрный фон, жёлтые поля,
+# жирные шрифты — читаемость на ярком солнце на экране Getac V110.
+FIELD_STYLE = """
+QWidget {
+    background-color: #050505;
+    color: #ffffff;
+    font-family: "Segoe UI", "Segoe UI Emoji", "Arial", sans-serif;
+    font-size: 18px;
+    font-weight: 600;
+}
+QLabel, QCheckBox, QRadioButton {
+    color: #ffffff;
+    font-weight: 600;
+}
+QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox {
+    background-color: #050505;
+    color: #ffe066;
+    border: 3px solid #ffe066;
+    border-radius: 6px;
+    font-weight: 700;
+    selection-background-color: #ffe066;
+    selection-color: #000000;
+}
+QComboBox {
+    background-color: #050505;
+    color: #ffe066;
+    border: 3px solid #ffe066;
+    border-radius: 6px;
+    font-weight: 700;
+}
+QComboBox QAbstractItemView {
+    background-color: #050505;
+    color: #ffe066;
+    border: 3px solid #ffe066;
+    selection-background-color: #ffe066;
+    selection-color: #000000;
+}
+QTableWidget {
+    background-color: #050505;
+    color: #ffffff;
+    gridline-color: #555555;
+    border: 2px solid #555555;
+    font-weight: 600;
+}
+QHeaderView::section {
+    background-color: #111111;
+    color: #ffe066;
+    border: 1px solid #555555;
+    font-weight: 700;
+}
+QTabWidget::pane { border: 2px solid #555555; }
+QTabBar::tab {
+    background: #111111;
+    color: #bbbbbb;
+    font-weight: 700;
+}
+QTabBar::tab:selected {
+    background: #ffe066;
+    color: #000000;
+}
+QGroupBox::title { color: #ffe066; }
+QScrollBar:vertical { background: #050505; width: 18px; }
+QScrollBar::handle:vertical { background: #ffe066; min-height: 40px; }
+QScrollBar:horizontal { background: #050505; height: 18px; }
+QScrollBar::handle:horizontal { background: #ffe066; min-width: 40px; }
+"""
 
-def apply_app_style(app: QApplication) -> None:
-    app.setStyleSheet(APP_STYLE)
-    font = QFont("Segoe UI", 10)
+
+def apply_app_style(app: QApplication, *, field_mode: bool = False) -> None:
+    """Глобальный стиль. field_mode — высококонтрастная «полевая» тема.
+
+    Тема для съёмки под солнцем: чёрный фон, жёлтые поля ввода, жирный
+    шрифт на 2 пункта крупнее. Приглушённые inline-подписи диалогов
+    перекрашиваются сразу (ensure_field_restyle), а диалоги, созданные
+    ПОЗЖЕ, подхватывают перекраску через ensure_field_restyle() в конце
+    своего __init__.
+    """
+    global _FIELD_MODE
+    _FIELD_MODE = bool(field_mode)
+    app.setStyleSheet(FIELD_STYLE if _FIELD_MODE else APP_STYLE)
+    font = QFont("Segoe UI", 12 if _FIELD_MODE else 10)
+    if _FIELD_MODE:
+        font.setBold(True)
     app.setFont(font)
+    ensure_field_restyle()
+
+
+# Приглушённые цвета inline-подписей → контрастные эквиваленты полевой темы.
+_INLINE_SWAP = {
+    "#9fb3c8": "#ffffff",
+    "#95a5a6": "#dddddd",
+    "#f1c40f": "#ffe066",
+    "#111820": "#050505",
+}
+_FIELD_MODE = False
+
+
+def ensure_field_restyle(app: QApplication | None = None) -> None:
+    """Перестроить стили под текущий режим темы.
+
+    Кнопки-фабрики (field_button) перестраиваются в ОБЕ стороны —
+    при выключении темы возвращают обычный вид. Прочие inline-стили
+    перекрашиваются только в полевом режиме (приглушённые цвета → яркие).
+    Диалоги вызывают её в конце __init__, чтобы серые подписи не остались
+    приглушёнными на чёрном фоне.
+    """
+    app = app or QApplication.instance()
+    if app is None:
+        return
+    for widget in app.allWidgets():
+        if widget.property("field_button"):
+            params = widget.property("field_params")
+            if params:
+                color, height, font_size = params
+                pressed = QColor(color).darker(125).name()
+                widget.setStyleSheet(
+                    _button_style(
+                        color, pressed, height, font_size, field=_FIELD_MODE
+                    )
+                )
+                continue
+        if not _FIELD_MODE:
+            continue
+        style = widget.styleSheet()
+        if not style:
+            continue
+        restyled = style
+        for muted, bright in _INLINE_SWAP.items():
+            restyled = restyled.replace(muted, bright)
+        if restyled != style:
+            widget.setStyleSheet(restyled)
+
+
+def _button_style(
+    color: str,
+    pressed: str,
+    height: int,
+    font_size: int,
+    *,
+    field: bool = False,
+) -> str:
+    """Стиль кнопки; field — полевая тема (жёлтая рамка, контрастный текст)."""
+    text_color = "white"
+    extra_border = ""
+    disabled_bg, disabled_fg = "#3a4352", "#8a94a6"
+    if field:
+        # Тёмная кнопка на чёрном фоне → жёлтый текст; цветная → белый.
+        if QColor(color).lightness() < 100:
+            text_color = "#ffe066"
+        extra_border = "border: 3px solid #ffe066;"
+        disabled_bg, disabled_fg = "#2a2a2a", "#808080"
+    return f"""
+    QPushButton {{
+        background-color: {color};
+        color: {text_color};
+        font-size: {font_size}px;
+        font-weight: bold;
+        {extra_border}
+        border-radius: 12px;
+        min-height: {height}px;
+        padding: 8px 12px;
+    }}
+    QPushButton:pressed {{
+        background-color: {pressed};
+    }}
+    QPushButton:disabled {{
+        background-color: {disabled_bg};
+        color: {disabled_fg};
+    }}
+    """
 
 
 def big_button(
@@ -124,26 +289,16 @@ def big_button(
     parent: QWidget | None = None,
 ) -> QPushButton:
     button = QPushButton(text, parent)
+    field = _FIELD_MODE
+    if field and color == "#3b4a5f":  # вторичная → чёрная с жёлтым акцентом
+        color = "#0b0b0b"
     pressed = QColor(color).darker(125).name()
+    # Свойства нужны ensure_field_restyle: перестилизовать кнопку целиком,
+    # когда тему переключают на лету (стиль строится из параметров).
+    button.setProperty("field_button", True)
+    button.setProperty("field_params", (color, height, font_size))
     button.setStyleSheet(
-        f"""
-        QPushButton {{
-            background-color: {color};
-            color: white;
-            font-size: {font_size}px;
-            font-weight: bold;
-            border-radius: 12px;
-            min-height: {height}px;
-            padding: 8px 12px;
-        }}
-        QPushButton:pressed {{
-            background-color: {pressed};
-        }}
-        QPushButton:disabled {{
-            background-color: #3a4352;
-            color: #8a94a6;
-        }}
-        """
+        _button_style(color, pressed, height, font_size, field=field)
     )
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     return button

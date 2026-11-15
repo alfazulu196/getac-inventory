@@ -25,7 +25,7 @@ CONFIG_PATH = APP_BASE / "config.json"
 VOSK_MODEL_DIR = APP_BASE / "model"
 
 # Версия приложения: видна в заголовке окна, настройках и в ПРОЧТИ_МЕНЯ сборки.
-APP_VERSION = "1.6.7"
+APP_VERSION = "1.6.8"
 
 
 @dataclass
@@ -78,6 +78,9 @@ class AppConfig:
     last_device_type: str = "camera"
     low_battery_warning: int = 20
     low_battery_critical: int = 10
+    # Высококонтрастная «полевая» тема (v1.6.8): чёрный фон, жёлтые поля,
+    # крупный жирный шрифт — читаемость на солнце на экране V110.
+    field_mode: bool = False
 
 
 DEVICE_TYPES: list[DeviceType] = [
@@ -149,6 +152,7 @@ def load_config(path: Path | str = CONFIG_PATH) -> AppConfig:
     cfg.last_device_type = raw.get("last_device_type", cfg.last_device_type)
     cfg.low_battery_warning = int(raw.get("low_battery_warning", cfg.low_battery_warning))
     cfg.low_battery_critical = int(raw.get("low_battery_critical", cfg.low_battery_critical))
+    cfg.field_mode = bool(raw.get("field_mode", cfg.field_mode))
     return cfg
 
 

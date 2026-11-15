@@ -525,6 +525,34 @@ def position_sort_key(text: str) -> tuple[int, int, str]:
     return (1, 0, raw.lower())
 
 
+_POSITION_RE = re.compile(r"^u?\s*(\d+)(?:\s*[-–]\s*u?\s*(\d+))?$", re.IGNORECASE)
+_TITLE_TRANSLATE = str.maketrans({"–": "-", "—": "-", "ё": "е", "Ё": "Е"})
+
+
+def normalize_position(text: str) -> str:
+    """«u5» / «5» / «U 5» / «U05» → «U5»; «5-U8» / «U5–U8» → «U5-U8».
+
+    Модель на разных кадрах пишет одну и ту же позицию по-разному;
+    сверка дублей мульти-кадров обязана видеть в «5» и «U5» один юнит.
+    Непонятное («юнит 5») возвращается как есть — пусть решает человек.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    match = _POSITION_RE.match(raw)
+    if not match:
+        return raw
+    low, high = int(match.group(1)), int(match.group(2) or 0)
+    if high and high < low:
+        low, high = high, low
+    return f"U{low}-U{high}" if high else f"U{low}"
+
+
+def normalize_title(text: str) -> str:
+    """Канонический вид названия для сверки: регистр, тире, ё→е, пробелы."""
+    return " ".join((text or "").translate(_TITLE_TRANSLATE).split()).lower()
+
+
 def analyse_rack_photo(
     path: str | Path,
     model: str | None = None,

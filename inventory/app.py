@@ -21,7 +21,7 @@ from inventory.services.logging_setup import (
 )
 from inventory.services.voice import VoiceService
 from inventory.ui.main_window import MainWindow
-from inventory.ui.widgets import apply_app_style
+from inventory.ui.widgets import apply_app_style, ensure_field_restyle
 
 
 def main() -> int:
@@ -34,7 +34,7 @@ def main() -> int:
     app.setApplicationName("Инвентаризация объекта")
     app.setOrganizationName("Getac Inventory")
     app.setApplicationVersion(APP_VERSION)
-    apply_app_style(app)
+    apply_app_style(app, field_mode=config.field_mode)
 
     # Прошлая аварийная работа? Подскажем файл, чтобы поле могло разобраться.
     last_crash = last_crash_file(paths["logs"])
@@ -82,6 +82,7 @@ def main() -> int:
 
     window = MainWindow(config, paths, repo, voice)
     window.showMaximized()
+    ensure_field_restyle()  # окна уже созданы — перекрасить их подписи
     try:
         return app.exec()
     finally:

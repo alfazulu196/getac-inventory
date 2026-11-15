@@ -29,13 +29,15 @@ from inventory.core.repository import InventoryRepository
 from inventory.services.rack_ai import (
     RackAnalysis,
     RackDevice,
+    normalize_position,
+    normalize_title,
     ollama_status,
     position_sort_key,
 )
 from inventory.services.voice import VoiceService
 from inventory.ui.photo_dialog import PhotoCaptureDialog
 from inventory.ui.rack_workers import RackAiWorker, WarmupWorker, detach_running
-from inventory.ui.widgets import big_button, secondary_button
+from inventory.ui.widgets import big_button, secondary_button, ensure_field_restyle
 
 _TYPE_INDEX = {t.code: i for i, t in enumerate(DEVICE_TYPES)}
 
@@ -76,6 +78,7 @@ class RackDialog(QDialog):
         self.setWindowTitle("🖥 Стойка по фото (ИИ)")
         self.setMinimumSize(980, 640)
         self._build_ui()
+        ensure_field_restyle()
         self._init_draft()
         if self._try_restore_draft():
             # Модель пусть греется для «🔁 Ещё кадр», камеру не открываем.
@@ -338,18 +341,22 @@ class RackDialog(QDialog):
             )
             self.status_label.setStyleSheet("color: #e67e22;")
             return
-        added = 0
+        added = merged = 0
         for device in analysis.devices:
-            if self._row_for_device(device) >= 0:
-                continue  # такой юнит уже есть в таблице
+            row = self._row_for_device(device)
+            if row >= 0:
+                self._merge_into_row(row, device)
+                merged += 1
+                continue
             self._append_row(device)
             added += 1
         if added:
             self._order_rows_by_position()
-        extra = f" (добавлено строк: {added})" if added < len(analysis.devices) else ""
+        summary = f"новых строк: {added}"
+        if merged:
+            summary += f", объединено с уже записанными: {merged}"
         self.status_label.setText(
-            f"✅ Найдено юнитов: {len(analysis.devices)}{extra} · {seconds} · "
-            f"{Path(path).name}"
+            f"✅ Кадр разобран ({seconds}): {summary} · {Path(path).name}"
         )
         self.status_label.setStyleSheet("color: #2ecc71;")
         self.create_btn.setEnabled(self.table.rowCount() > 0)
@@ -360,33 +367,44 @@ class RackDialog(QDialog):
     # Таблица
     # ------------------------------------------------------------------
     def _row_for_device(self, device: RackDevice) -> int:
-        """Дубль определяет ПОЗИЦИЯ, а не описание.
+        """Ищем юнит среди строк; >=0 — строка НАЙДЕНА (мёрж), -1 — новая.
 
-        Разные юниты одной модели (U5 и U6) — законные дубликаты, их нельзя
-        терять. Совпадение title+detail используется только когда позиция
-        неизвестна хотя бы у одного из сравниваемых.
+        Позиция — физическая правда стойки: совпали нормализованные
+        позиции («5» и «U5» — один юнит) → это ОДНА коробка, даже если
+        названия с кадров различаются. Названия сверяются только когда
+        позиция неизвестна хотя бы у одного (и то нормализованно —
+        «D-Link  DES-1210» и «d-link des-1210» — одно и то же).
         """
+        device_pos = normalize_position(device.position)
         for row in range(self.table.rowCount()):
             pos_item = self.table.item(row, _COL_POS)
-            row_pos = (pos_item.text().strip() if pos_item else "")
-            device_pos = (device.position or "").strip()
+            row_pos = normalize_position(pos_item.text() if pos_item else "")
             if device_pos and row_pos:
-                if row_pos.lower() != device_pos.lower():
-                    continue  # позиции известны и различаются → не дубль
-                title = self.table.item(row, _COL_NAME)
-                if title and title.text().strip() == device.title:
+                if row_pos == device_pos:
                     return row
-                continue
+                continue  # позиции известны и различаются → точно другой юнит
             title = self.table.item(row, _COL_NAME)
-            note = self.table.item(row, _COL_NOTE)
-            if (
-                title
-                and title.text().strip() == device.title
-                and note
-                and note.text().strip() == device.detail
-            ):
-                return row
+            if title and normalize_title(title.text()) == normalize_title(device.title):
+                note = self.table.item(row, _COL_NOTE)
+                if not device_pos or not note or (
+                    note.text().strip() == device.detail
+                ):
+                    return row
         return -1
+
+    def _merge_into_row(self, row: int, device: RackDevice) -> None:
+        """Второй кадр уточняет юнит: заполняем ТОЛЬКО пустые поля."""
+        name_item = self.table.item(row, _COL_NAME)
+        if name_item and not name_item.text().strip():
+            name_item.setText(device.title)
+            name_item.setData(Qt.ItemDataRole.UserRole, device.brand)
+        pos_item = self.table.item(row, _COL_POS)
+        device_pos = normalize_position(device.position)
+        if pos_item and not pos_item.text().strip() and device_pos:
+            pos_item.setText(device_pos)
+        note_item = self.table.item(row, _COL_NOTE)
+        if note_item and not note_item.text().strip() and device.detail:
+            note_item.setText(device.detail)
 
     def _append_row(self, device: RackDevice | None = None) -> int:
         rd = {

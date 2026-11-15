@@ -1,0 +1,35 @@
+# CI репозитория «Инвентаризация объекта» (v1.6.8).
+# Каждый пуш в main прогоняет линтер и полный набор тестов.
+# GitLab lab.chk.su:4443 — зеркало без раннеров; CI только здесь (GitHub Actions).
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen  # тесты Qt без экрана
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt ruff
+
+      - name: Ruff (линтер)
+        run: ruff check .
+
+      - name: Pytest
+        run: python -X utf8 -m pytest -q

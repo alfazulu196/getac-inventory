@@ -21,10 +21,16 @@ def detach_running(worker: QThread | None) -> None:
     """
     if worker is None:
         return
-    try:
-        worker.analysed.disconnect()
-    except TypeError:
-        pass
+    # Универсальный отпускатель: у разных воркеров разные сигналы —
+    # отсоединяем те, что есть, остальные пропускаем.
+    for signal_name in ("analysed", "progress", "warmed", "checked"):
+        signal = getattr(worker, signal_name, None)
+        if signal is None:
+            continue
+        try:
+            signal.disconnect()
+        except TypeError:
+            pass
     if worker.isRunning():
         _ORPHANS.append(worker)
         worker.finished.connect(partial(_ORPHANS.remove, worker))

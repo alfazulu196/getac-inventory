@@ -37,9 +37,10 @@ from inventory.core.repository import InventoryRepository
 from inventory.services.photo_intel import photo_intel_available
 from inventory.services.voice import VoiceService
 from inventory.ui.location_dialog import LocationDialog
+from inventory.ui.net_workers import NetCheckWorker
 from inventory.ui.photo_dialog import PhotoCaptureDialog
 from inventory.ui.photo_intel_workers import PhotoIntelWorker, detach_running
-from inventory.ui.widgets import big_button, secondary_button
+from inventory.ui.widgets import big_button, secondary_button, ensure_field_restyle
 
 
 class DeviceCardDialog(QDialog):
@@ -66,6 +67,7 @@ class DeviceCardDialog(QDialog):
         self.photo_path: str | None = device.photo_path if device else None
         self._pending_photos: list[str] = []
         self._intel_worker: PhotoIntelWorker | None = None
+        self._net_worker: NetCheckWorker | None = None
         self._recording = False
         self._voice_timer = QTimer(self)
         self._voice_timer.setInterval(800)
@@ -80,6 +82,7 @@ class DeviceCardDialog(QDialog):
             self._load_device(device)
         else:
             self._apply_initial()
+        ensure_field_restyle()
 
     # ------------------------------------------------------------------
     # UI
@@ -154,9 +157,25 @@ class DeviceCardDialog(QDialog):
         form.addRow("MAC-адрес", self.mac_edit)
         self.mac_edit.textChanged.connect(self._suggest_mac_vendor)
 
+        ip_row = QHBoxLayout()
         self.ip_edit = QLineEdit()
         self.ip_edit.setPlaceholderText("192.168.10.51")
-        form.addRow("IP-адрес", self.ip_edit)
+        ip_row.addWidget(self.ip_edit, 1)
+        self.net_btn = secondary_button("🌐 Сеть", height=40, font_size=14)
+        self.net_btn.setToolTip(
+            "Сетевая автопроверка (v1.6.8): ping + сверка MAC по ARP-таблице.\n"
+            "🔴 не отвечает — выключено/не в сети; 🟠 MAC в ARP не совпал —\n"
+            "IP занят другой коробкой; 🟢 в сети, MAC подтверждён.\n"
+            "Ноутбук должен быть в той же сети, что и оборудование."
+        )
+        self.net_btn.clicked.connect(self._check_network)
+        ip_row.addWidget(self.net_btn)
+        form.addRow("IP-адрес", ip_row)
+
+        self.net_status = QLabel("")
+        self.net_status.setWordWrap(True)
+        self.net_status.setStyleSheet("color: #9fb3c8;")
+        form.addRow("", self.net_status)
 
         self.power_combo = QComboBox()
         self.power_combo.setEditable(True)
@@ -517,6 +536,34 @@ class DeviceCardDialog(QDialog):
             self._refresh_photo_ui()
 
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Сетевая автопроверка («🌐 Сеть», v1.6.8)
+    # ------------------------------------------------------------------
+    def _check_network(self) -> None:
+        ip = self.ip_edit.text().strip()
+        self.net_btn.setEnabled(False)
+        self.net_status.setStyleSheet("color: #9fb3c8;")
+        self.net_status.setText("⏳ Проверяю сеть…")
+        self._net_worker = NetCheckWorker(ip, self.mac_edit.text().strip(), self)
+        self._net_worker.checked.connect(self._on_net_checked)
+        self._net_worker.start()
+
+    def _on_net_checked(self, result) -> None:
+        self._net_worker = None
+        self.net_btn.setEnabled(True)
+        color = {
+            "alive": "#2ecc71",
+            "mac_mismatch": "#e67e22",
+            "unreachable": "#e74c3c",
+        }.get(result.status, "#9fb3c8")
+        icon = {
+            "alive": "🟢",
+            "mac_mismatch": "🟠",
+            "unreachable": "🔴",
+        }.get(result.status, "⚪")
+        self.net_status.setStyleSheet(f"color: {color};")
+        self.net_status.setText(f"{icon} Сеть: {result.detail}")
+
     # Разбор этикетки по фото («🔍 Этикетка»)
     # ------------------------------------------------------------------
     def _label_photo(self) -> None:
@@ -712,6 +759,9 @@ class DeviceCardDialog(QDialog):
         if self._intel_worker is not None:
             detach_running(self._intel_worker)
             self._intel_worker = None
+        if self._net_worker is not None:
+            detach_running(self._net_worker)
+            self._net_worker = None
         super().reject()
 
     def closeEvent(self, event) -> None:
@@ -719,5 +769,7 @@ class DeviceCardDialog(QDialog):
             self.voice.cancel_recording()
         detach_running(self._intel_worker)
         self._intel_worker = None
+        detach_running(self._net_worker)
+        self._net_worker = None
         self._voice_timer.stop()
         super().closeEvent(event)

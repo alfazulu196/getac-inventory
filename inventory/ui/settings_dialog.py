@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -24,7 +25,7 @@ from inventory.config import APP_VERSION, AppConfig, save_config
 from inventory.core.repository import InventoryRepository
 from inventory.services.scanner import list_serial_ports
 from inventory.services.voice import VoiceService
-from inventory.ui.widgets import big_button, secondary_button
+from inventory.ui.widgets import apply_app_style, big_button, secondary_button
 
 
 class SettingsDialog(QDialog):
@@ -205,6 +206,16 @@ class SettingsDialog(QDialog):
         self.backups_label = QLabel(str(self.paths["backups"]))
         self.backups_label.setWordWrap(True)
         form.addRow("Резервные копии", self.backups_label)
+
+        self.field_check = QCheckBox(
+            "Полевая тема (высококонтрастная, для солнца)"
+        )
+        self.field_check.setToolTip(
+            "Чёрный фон, жёлтые поля ввода, крупный жирный шрифт —\n"
+            "читаемость на ярком солнце на экране Getac V110.\n"
+            "Применяется сразу и сохраняется на следующие запуски."
+        )
+        form.addRow("", self.field_check)
         return tab
 
     def _update_scanner_fields(self) -> None:
@@ -234,6 +245,8 @@ class SettingsDialog(QDialog):
                 str(self.repo.get_setting("report_contract") or "")
             )
 
+        self.field_check.setChecked(bool(getattr(self.config, "field_mode", False)))
+
     def _save(self) -> None:
         mode = self.mode_combo.currentData()
         port = self.port_combo.currentText().strip()
@@ -257,6 +270,7 @@ class SettingsDialog(QDialog):
 
         self.config.voice.enabled = self.voice_enabled.isChecked()
         self.config.voice.device = self.mic_combo.currentData()
+        self.config.field_mode = self.field_check.isChecked()
 
         if self.repo is not None:
             self.repo.set_setting(
@@ -271,4 +285,8 @@ class SettingsDialog(QDialog):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Настройки", f"Не удалось сохранить настройки:\n{exc}")
             return
+        # Полевая тема применяется сразу — перезапуск не нужен.
+        app = QApplication.instance()
+        if app is not None:
+            apply_app_style(app, field_mode=self.config.field_mode)
         self.accept()
