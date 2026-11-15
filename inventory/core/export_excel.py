@@ -2,6 +2,7 @@
 """Формирование Excel-отчёта по сессии."""
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from collections import Counter
@@ -23,7 +24,22 @@ except ImportError:  # pragma: no cover - полевая деградация
 
 from inventory.config import APP_VERSION, STATUS_BY_CODE, device_type_name, status_name
 from inventory.core.baseline import compare_baseline
+from inventory.core.models import Device
 from inventory.core.repository import InventoryRepository
+
+# Статусы зафиксированной ревизии сети (v1.6.10) — лист «Сеть».
+_NET_STATUS_TEXT = {
+    "alive": "🟢 в сети",
+    "mac_mismatch": "🟠 MAC не совпал",
+    "unreachable": "🔴 не отвечает",
+    "no_ip": "⚪ нет IP",
+    "bad_ip": "⚪ кривой IP",
+}
+_NET_STATUS_COLOR = {
+    "alive": "#2ecc71",
+    "mac_mismatch": "#e67e22",
+    "unreachable": "#e74c3c",
+}
 
 HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
 HEADER_FONT = Font(bold=True, color="FFFFFF", size=11)
@@ -388,6 +404,53 @@ def export_session(
         connection_rows,
     )
     _autosize(ws_connections)
+
+    # --- Сеть: зафиксированные итоги ревизии (v1.6.10) ---
+    # Источник — attributes_json["net_audit"], туда пишет кнопка
+    # «💾 Зафиксировать в базе» в диалоге ревизии. Лист создаётся,
+    # только если ревизия проводилась и зафиксирована.
+    net_entries: list[tuple[dict, Device]] = []
+    for device in devices:
+        if not device.attributes_json:
+            continue
+        try:
+            attrs = json.loads(device.attributes_json)
+        except json.JSONDecodeError:
+            continue
+        audit = attrs.get("net_audit") if isinstance(attrs, dict) else None
+        if isinstance(audit, dict) and audit.get("status"):
+            net_entries.append((audit, device))
+    if net_entries:
+        ws_net = wb.create_sheet("Сеть")
+        net_rows: list[list[Any]] = []
+        for audit, device in net_entries:
+            ports = audit.get("ports") or {}
+            port_text = "; ".join(
+                f"{port}: {'открыт' if ok else 'не отвечает'}"
+                for port, ok in sorted(ports.items())
+            )
+            net_rows.append([
+                device.display_id,
+                device.model or "",
+                device.ip or "",
+                _NET_STATUS_TEXT.get(str(audit.get("status")), str(audit.get("status"))),
+                audit.get("detail") or "",
+                port_text,
+                audit.get("date") or "",
+            ])
+        _write_table(
+            ws_net,
+            ["ID", "Модель", "IP", "Статус", "Причина", "Порты", "Дата ревизии"],
+            net_rows,
+        )
+        _autosize(ws_net)
+        for row_cells, (audit, _device) in zip(
+            ws_net.iter_rows(min_row=2), net_entries
+        ):
+            color = _NET_STATUS_COLOR.get(
+                str(audit.get("status")), "#95a5a6")
+            row_cells[3].fill = PatternFill("solid", fgColor=_tint(color))
+        ws_net.column_dimensions["E"].width = 60  # причина целиком
 
     # --- Регистраторы: карта каналов ---
     recorder_types = {"nvr", "dvr"}

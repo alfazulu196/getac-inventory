@@ -45,6 +45,9 @@ class NetCheckResult:
     detail: str
     latency_ms: int | None = None
     arp_mac: str | None = None
+    # TCP-пробы служб (v1.6.10) — только когда коробка в своей подсети;
+    # None = пробы не делались (другая подсеть / не доходили).
+    ports: dict[int, bool] | None = None
 
     @property
     def is_alive(self) -> bool:
@@ -137,6 +140,51 @@ def local_ipv4() -> str | None:
         sock.close()
 
 
+# Службы, по которым поле судит «жива коробка или отдаёт работу»:
+# RTSP — видеопоток камер/регистраторов, HTTP — веб-интерфейс.
+DEFAULT_SERVICE_PORTS = {554: "RTSP", 80: "HTTP"}
+PORT_TIMEOUT_S = 0.8
+
+
+def probe_port(
+    ip: str,
+    port: int,
+    timeout_s: float = PORT_TIMEOUT_S,
+    connector=socket.create_connection,
+) -> bool:
+    """TCP-проба: True — порт принимает соединение (служба жива).
+
+    Закрытый порт на живом хосте отказывает сразу (RST) — быстро;
+    таймаут — только если порт фильтруется брандмауэром.
+    """
+    try:
+        with connector((ip, port), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
+
+
+def probe_service_ports(
+    ip: str,
+    ports: dict[int, str] | None = None,
+    connector=socket.create_connection,
+) -> dict[int, bool]:
+    """Пачка TCP-проб {порт: открыт?} для устройства."""
+    check_ports = ports or DEFAULT_SERVICE_PORTS
+    return {
+        port: probe_port(ip, port, connector=connector)
+        for port in check_ports
+    }
+
+
+def ports_summary(ports: dict[int, bool]) -> str:
+    parts = []
+    for port, is_open in sorted(ports.items()):
+        name = DEFAULT_SERVICE_PORTS.get(port, f"порт {port}")
+        parts.append(f"{name} {port}: {'открыт' if is_open else 'не отвечает'}")
+    return "; ".join(parts)
+
+
 def check_device(
     ip: str | None,
     expected_mac: str | None,
@@ -157,11 +205,16 @@ def check_device(
     ip_s = str(addr)
 
     # Оговорка о подсети: в поле ноутбук и оборудование обычно в одном /24.
+    # TCP-пробы портов честны только в своей подсети — через маршрутизатор
+    # может резаться всё подряд.
     note = ""
     local = local_ipv4()
-    if local:
-        if ip_s.rsplit(".", 1)[0] != local.rsplit(".", 1)[0]:
-            note = "не в подсети ноутбука; "
+    same_subnet = (
+        local is not None
+        and ip_s.rsplit(".", 1)[0] == local.rsplit(".", 1)[0]
+    )
+    if local and not same_subnet:
+        note = "не в подсети ноутбука; "
 
     try:
         alive, latency = ping_host(ip_s, runner=runner)
@@ -196,4 +249,15 @@ def check_device(
                   "не обновился — сверка отложена до следующей проверки")
     else:
         detail = f"{note}в сети за {latency or '<1'} мс (MAC не записан — сверять нечем)"
-    return NetCheckResult("alive", detail, latency, arp_mac)
+
+    # TCP-пробы служб (v1.6.10): камера «жива», но поток не отдаёт — видно сразу.
+    ports_map: dict[int, bool] | None = None
+    if same_subnet:
+        try:
+            ports_map = probe_service_ports(ip_s)
+            detail += f"; {ports_summary(ports_map)}"
+        except OSError:
+            detail += "; TCP-пробы служб не выполнились"
+    elif note:
+        detail += "; порты не проверялись (другая подсеть)"
+    return NetCheckResult("alive", detail, latency, arp_mac, ports_map)

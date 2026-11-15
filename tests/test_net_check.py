@@ -19,6 +19,7 @@ from inventory.services.net_check import (  # noqa: E402
     check_device,
     normalize_mac,
     ping_host,
+    probe_port,
 )
 
 
@@ -91,7 +92,10 @@ def test_check_no_ip_and_bad_ip() -> None:
     assert check_device("абв", None, runner=_runner()).status == "bad_ip"
 
 
-def test_check_alive_with_mac_confirmed() -> None:
+def test_check_alive_with_mac_confirmed(monkeypatch) -> None:
+    from inventory.services import net_check
+
+    monkeypatch.setattr(net_check, "local_ipv4", lambda: None)  # без TCP-проб
     result = check_device(
         "192.168.4.201", "A4:2B:B0:D1:E2:F3", runner=_runner(_PING_RU_OK),
         arp={"192.168.4.201": "a4:2b:b0:d1:e2:f3"},
@@ -102,7 +106,10 @@ def test_check_alive_with_mac_confirmed() -> None:
     assert "MAC подтверждён" in result.detail
 
 
-def test_check_mac_mismatch_is_reported_but_device_alive() -> None:
+def test_check_mac_mismatch_is_reported_but_device_alive(monkeypatch) -> None:
+    from inventory.services import net_check
+
+    monkeypatch.setattr(net_check, "local_ipv4", lambda: None)
     result = check_device(
         "192.168.4.201", "AA:BB:CC:DD:EE:01", runner=_runner(_PING_RU_OK),
         arp={"192.168.4.201": "a4:2b:b0:d1:e2:f3"},
@@ -112,7 +119,10 @@ def test_check_mac_mismatch_is_reported_but_device_alive() -> None:
     assert "≠" in result.detail
 
 
-def test_check_alive_without_mac_data() -> None:
+def test_check_alive_without_mac_data(monkeypatch) -> None:
+    from inventory.services import net_check
+
+    monkeypatch.setattr(net_check, "local_ipv4", lambda: None)
     result = check_device(
         "192.168.4.201", None, runner=_runner(_PING_RU_OK), arp={})
     assert result.status == "alive"
@@ -151,6 +161,75 @@ def test_check_subnet_note(monkeypatch) -> None:
     same = net_check.check_device(
         "10.0.0.201", None, runner=_runner(_PING_RU_OK), arp={})
     assert "не в подсети" not in same.detail
+
+
+# ------------------------------------------------------------------ порты
+def test_probe_port_loopback_open_and_closed() -> None:
+    """Реальный (но офлайн) тест: слушающий порт открыт, после close — нет."""
+    import socket as socket_mod
+
+    server = socket_mod.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    assert probe_port("127.0.0.1", port) is True
+    server.close()
+    assert probe_port("127.0.0.1", port) is False
+
+
+def test_probe_port_refused_timeout_open(monkeypatch) -> None:
+    """Отказ/таймаут → False; успешное соединение → True (фейковый connector)."""
+
+    def refusing(addr, timeout=None):
+        raise ConnectionRefusedError()
+
+    def filtering(addr, timeout=None):
+        raise TimeoutError()
+
+    def opened(addr, timeout=None):
+        import contextlib
+
+        return contextlib.nullcontext()
+
+    assert probe_port("192.168.4.201", 554, connector=refusing) is False
+    assert probe_port("192.168.4.201", 80, connector=filtering) is False
+    assert probe_port("192.168.4.201", 554, connector=opened) is True
+
+
+def test_check_alive_probes_ports_in_same_subnet(monkeypatch) -> None:
+    from inventory.services import net_check
+
+    monkeypatch.setattr(net_check, "local_ipv4", lambda: "192.168.4.10")
+    monkeypatch.setattr(
+        net_check, "probe_service_ports",
+        lambda ip: {554: True, 80: False},
+    )
+    result = check_device(
+        "192.168.4.201", None, runner=_runner(_PING_RU_OK), arp={})
+    assert result.ports == {554: True, 80: False}
+    assert "RTSP 554: открыт" in result.detail
+    assert "HTTP 80: не отвечает" in result.detail
+
+
+def test_check_alive_skips_ports_other_subnet(monkeypatch) -> None:
+    from inventory.services import net_check
+
+    monkeypatch.setattr(net_check, "local_ipv4", lambda: "10.0.0.5")
+    result = check_device(
+        "192.168.4.201", None, runner=_runner(_PING_RU_OK), arp={})
+    assert result.ports is None
+    assert "порты не проверялись" in result.detail
+
+
+def test_check_alive_without_local_net_skips_ports(monkeypatch) -> None:
+    """Ноутбук без сети: local_ipv4 None — порты не пробуем, статья честная."""
+    from inventory.services import net_check
+
+    monkeypatch.setattr(net_check, "local_ipv4", lambda: None)
+    result = check_device(
+        "192.168.4.201", None, runner=_runner(_PING_RU_OK), arp={})
+    assert result.ports is None
+    assert "RTSP" not in result.detail
 
 
 # ------------------------------------------------------------- UI-вязка

@@ -3,11 +3,17 @@
 
 Кнопка «🌐 Ревизия сети» в списке устройств запускает батч-проверку
 ping + сверка MAC по ARP для каждого устройства сессии — одним взглядом
-видно, что записано, но не отвечает. Ничего не меняет в базе, только
-диагностика. Двойной клик по строке открывает карточку устройства.
+видно, что записано, но не отвечает. Двойной клик по строке открывает
+карточку устройства.
+
+v1.6.10: кнопка «💾 Зафиксировать в базе» — итоги ревизии записываются
+в устройства (примечание с датой/статусом/причиной + служебное поле
+attributes_json["net_audit"]) и попадают в лист «Сеть» Excel-отчёта.
 """
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
@@ -16,6 +22,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -63,11 +70,16 @@ class NetAuditDialog(QDialog):
         self.setMinimumSize(1000, 600)
         self._build_ui(len(items))
         ensure_field_restyle()
-        self._worker = NetAuditWorker(items, self)
-        self._worker.checked.connect(self._on_checked)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.start()
+        if items:
+            self._worker = NetAuditWorker(items, self)
+            self._worker.checked.connect(self._on_checked)
+            self._worker.progress.connect(self._on_progress)
+            self._worker.finished.connect(self._on_finished)
+            self._worker.start()
+        else:
+            # Нечего проверять — воркер не нужен (иначе гонка «поток
+            # стартовал, диалог уже удалён» при мгновенном GC в тестах).
+            self._on_finished()
 
     def _build_ui(self, total: int) -> None:
         layout = QVBoxLayout(self)
@@ -104,6 +116,16 @@ class NetAuditDialog(QDialog):
         layout.addWidget(self.summary_label)
 
         buttons = QHBoxLayout()
+        if self.repo is not None:
+            self.save_btn = big_button(
+                "💾 Зафиксировать в базе", "#2980b9", height=52, font_size=16)
+            self.save_btn.setToolTip(
+                "Записать итоги ревизии в устройства (v1.6.10): примечание\n"
+                "с датой/статусом/причиной + служебное поле для листа\n"
+                "«Сеть» в Excel-отчёте. Повторный запуск ревизии — новый диалог."
+            )
+            self.save_btn.clicked.connect(self._commit_results)
+            buttons.addWidget(self.save_btn, 2)
         buttons.addStretch(1)
         self.close_btn = big_button("Закрыть", "#3b4a5f", height=52, font_size=16)
         self.close_btn.clicked.connect(self.accept)
@@ -156,6 +178,59 @@ class NetAuditDialog(QDialog):
             parts.append(f"⚪ без IP/кривой: {missed}")
         self.summary_label.setText(" · ".join(parts))
         self.status_label.setText("✅ Ревизия завершена")
+
+    def _commit_results(self) -> None:
+        """v1.6.10: итоги ревизии → в устройства (note + attributes_json).
+
+        В note дописывается строка «🌐 дата — статус: причина» (история
+        ревизий копится в примечании), в attributes_json["net_audit"]
+        кладётся последний замер целиком — его читает лист «Сеть»
+        Excel-отчёта. Повторная фиксация перезаписывает служебное поле
+        (последний замер выигрывает) и добавляет новую строку в note.
+        """
+        if self.repo is None or not self._results:
+            return
+        stamp = datetime.now().strftime("%d.%m.%Y %H:%M")
+        fixed = 0
+        for info in self._results:
+            device = self.repo.get_device(info["device_id"])
+            if device is None:
+                continue
+            result = info["result"]
+            attrs: dict = {}
+            if device.attributes_json:
+                try:
+                    parsed = json.loads(device.attributes_json)
+                    if isinstance(parsed, dict):
+                        attrs = parsed
+                except json.JSONDecodeError:
+                    attrs = {}  # битый JSON перезаписываем честным
+            attrs["net_audit"] = {
+                "date": datetime.now().isoformat(timespec="seconds"),
+                "status": result.status,
+                "detail": result.detail,
+                "latency_ms": result.latency_ms,
+                "arp_mac": result.arp_mac,
+                "ports": result.ports,
+            }
+            line = (
+                f"🌐 {stamp} — {_STATUS_TEXT.get(result.status, result.status)}"
+                f": {result.detail}"
+            )
+            note = (device.note or "").rstrip()
+            note = f"{note}\n{line}" if note else line
+            self.repo.update_device(device.id, note=note, attributes_json=attrs)
+            fixed += 1
+        if hasattr(self, "save_btn"):
+            self.save_btn.setEnabled(False)
+            self.save_btn.setText("💾 Записано")
+        QMessageBox.information(
+            self,
+            "Ревизия сети",
+            f"Итоги записаны в {fixed} устройств(а).\n\n"
+            "В примечании карточек — дата/статус/причина, в Excel-отчёте\n"
+            "появится лист «Сеть».",
+        )
 
     def _open_selected(self) -> None:
         row = self.table.currentRow()

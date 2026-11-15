@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from PyQt6.QtCore import QUrl
 from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from inventory.config import APP_VERSION, data_paths, load_config
 from inventory.core.db import Database
@@ -22,6 +23,59 @@ from inventory.services.logging_setup import (
 from inventory.services.voice import VoiceService
 from inventory.ui.main_window import MainWindow
 from inventory.ui.widgets import apply_app_style, ensure_field_restyle
+
+
+def open_database_with_recovery(paths: dict[str, Path]) -> Database | None:
+    """База не открывается (побита/подменена)? → восстановление из копии.
+
+    v1.6.10: FR-60 закрыл восстановление в настройках; здесь закрывается
+    сценарий «приложение вообще не стартует». Предлагаем выбрать копию из
+    data\backups, восстанавливаем (WAL-safe) и пробуем открыть снова —
+    цикл продолжается, пока пользователь не откажется или база не
+    откроется. Битый файл сохраняется как safety-копия before_restore_*.
+    """
+    from inventory.services.backup import restore_database  # noqa: PLC0415
+
+    while True:
+        try:
+            return Database(paths["db"])
+        except Exception as exc:  # noqa: BLE001 — sqlite может упасть по-разному
+            backups = Path(paths["backups"])
+            copies = sorted(backups.glob("*.db")) if backups.exists() else []
+            if not copies:
+                QMessageBox.critical(
+                    None,
+                    "База данных",
+                    f"Не удалось открыть базу:\n{paths['db']}\n\n{exc}\n\n"
+                    f"Резервных копий в {backups} нет — восстановление "
+                    "невозможно.",
+                )
+                return None
+            answer = QMessageBox.question(
+                None,
+                "База повреждена",
+                f"База не открывается:\n{paths['db']}\n\n{exc}\n\n"
+                f"В папке копий: {len(copies)} файл(ов).\n"
+                "Выбрать копию для восстановления?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return None
+            chosen, _f = QFileDialog.getOpenFileName(
+                None, "Выберите копию базы", str(backups), "Копии базы (*.db)"
+            )
+            if not chosen:
+                return None
+            try:
+                restore_database(chosen, paths["db"], safety_dir=backups)
+            except Exception as restore_exc:  # noqa: BLE001
+                QMessageBox.critical(
+                    None,
+                    "Восстановление базы",
+                    f"Не удалось восстановить из {chosen}:\n{restore_exc}\n\n"
+                    "Попробуйте другую копию или откажитесь.",
+                )
 
 
 def main() -> int:
@@ -63,14 +117,8 @@ def main() -> int:
         "exe" if getattr(sys, "frozen", False) else "src",
     )
 
-    try:
-        db = Database(paths["db"])
-    except Exception as exc:  # noqa: BLE001
-        QMessageBox.critical(
-            None,
-            "База данных",
-            f"Не удалось открыть базу:\n{paths['db']}\n\n{exc}",
-        )
+    db = open_database_with_recovery(paths)
+    if db is None:
         return 1
 
     repo = InventoryRepository(db)

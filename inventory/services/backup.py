@@ -76,6 +76,20 @@ def backup_database(
     target = sqlite3.connect(str(backup_path))
     try:
         source.backup(target)
+    except sqlite3.Error:
+        # База побита/не читается: sqlite3.connect(target) успел создать
+        # пустой файл — убираем, чтобы он не попал в список копий.
+        try:
+            target.close()
+            source.close()
+        except sqlite3.Error:
+            pass
+        try:
+            if backup_path.exists():
+                backup_path.unlink()
+        except OSError:
+            pass
+        raise
     finally:
         target.close()
         source.close()
