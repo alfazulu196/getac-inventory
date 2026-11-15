@@ -120,7 +120,16 @@ def restore_database(
     db_path: str | Path,
     safety_dir: str | Path | None = None,
 ) -> Path | None:
-    """Восстанавливает базу из копии, сохраняя текущую как safety-копию."""
+    """Восстанавливает базу из копии (WAL-safe, v1.6.9).
+
+    - Safety-копия текущей базы — через SQLite backup API: она консистентна
+      даже при живом WAL-режиме (сырое копирование файла теряет хвост WAL).
+    - После подмены файла удаляются хвосты `-wal`/`-shm` СТАРОЙ базы —
+      иначе SQLite «дорисует» старые страницы поверх восстановленной.
+    ВАЖНО: вызывающий должен закрыть соединение с базой ДО вызова —
+    иначе checkpoint старого WAL при закрытии перезапишет восстановленный
+    файл старыми данными.
+    """
     backup_path = Path(backup_path)
     db_path = Path(db_path)
     if not backup_path.exists():
@@ -128,14 +137,27 @@ def restore_database(
 
     safety_path: Path | None = None
     if db_path.exists() and safety_dir:
-        safety_dir = Path(safety_dir)
-        safety_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        safety_path = safety_dir / f"before_restore_{stamp}.db"
-        shutil.copy2(db_path, safety_path)
+        Path(safety_dir).mkdir(parents=True, exist_ok=True)
+        try:
+            # Консистентная safety-копия даже при живом WAL.
+            safety_path = backup_database(
+                db_path, safety_dir, prefix="before_restore")
+        except sqlite3.Error:
+            # База побита/не читается — это типичный повод для restore.
+            # Спасаем «что есть» сырым копированием (старое поведение).
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            safety_path = Path(safety_dir) / f"before_restore_{stamp}.db"
+            shutil.copy2(db_path, safety_path)
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(backup_path, db_path)
+    for suffix in ("-wal", "-shm"):
+        leftover = db_path.with_name(db_path.name + suffix)
+        try:
+            if leftover.exists():
+                leftover.unlink()
+        except OSError:
+            pass  # хвост чужого WAL не должен валить восстановление
     return safety_path
 
 

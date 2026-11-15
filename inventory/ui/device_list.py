@@ -22,7 +22,7 @@ from inventory.core.models import Device, Location
 from inventory.core.repository import InventoryRepository
 from inventory.services.voice import VoiceService
 from inventory.ui.device_card import DeviceCardDialog
-from inventory.ui.widgets import big_button, secondary_button
+from inventory.ui.widgets import big_button, secondary_button, ensure_field_restyle
 
 
 class DeviceListDialog(QDialog):
@@ -52,6 +52,7 @@ class DeviceListDialog(QDialog):
         self.setMinimumSize(1100, 650)
         self._build_ui()
         self.refresh()
+        ensure_field_restyle()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -74,6 +75,13 @@ class DeviceListDialog(QDialog):
             self.type_combo.addItem(device_type.name, device_type.code)
         self.type_combo.currentIndexChanged.connect(self.refresh)
         filters.addWidget(self.type_combo, 1)
+
+        self.location_combo = QComboBox()
+        self.location_combo.addItem("Все локации", None)
+        for location in self.repo.list_locations(self.session_id):
+            self.location_combo.addItem(location.label(), location.id)
+        self.location_combo.currentIndexChanged.connect(self.refresh)
+        filters.addWidget(self.location_combo, 1)
 
         self.status_combo = QComboBox()
         self.status_combo.addItem("Все статусы", None)
@@ -122,6 +130,16 @@ class DeviceListDialog(QDialog):
         self.tags_btn = secondary_button("🏷 Бирки QR", height=54, font_size=16)
         self.tags_btn.clicked.connect(self._print_tags)
         buttons.addWidget(self.tags_btn)
+
+        self.net_audit_btn = secondary_button(
+            "🌐 Ревизия сети", height=54, font_size=16)
+        self.net_audit_btn.setToolTip(
+            "Ревизия сети сессии (v1.6.9): ping + сверка MAC по ARP для всех\n"
+            "устройств пачкой. Перед выездом видно, что записано, но не отвечает,\n"
+            "и чей IP занят другой коробкой. Ничего не меняет в базе."
+        )
+        self.net_audit_btn.clicked.connect(self._net_audit)
+        buttons.addWidget(self.net_audit_btn)
         buttons.addStretch(1)
 
         self.close_btn = big_button("Закрыть", "#3b4a5f", height=54, font_size=17)
@@ -132,11 +150,13 @@ class DeviceListDialog(QDialog):
     def refresh(self) -> None:
         query = self.search_edit.text().strip() or None
         device_type = self.type_combo.currentData()
+        location_id = self.location_combo.currentData()
         status = self.status_combo.currentData()
         self._devices = self.repo.list_devices(
             self.session_id,
             query=query,
             device_type=device_type,
+            location_id=location_id,
             status=status,
         )
         self.table.setRowCount(len(self._devices))
@@ -218,3 +238,31 @@ class DeviceListDialog(QDialog):
 
         dialog = TagsDialog(self.repo, self.session_id, self.paths, self)
         dialog.exec()
+
+    def _net_audit(self) -> None:
+        from inventory.ui.net_audit_dialog import NetAuditDialog  # noqa: PLC0415
+
+        devices = self.repo.list_devices(self.session_id)
+        items = [
+            (d.id, d.display_id, d.model or "", d.ip or "", d.mac or "")
+            for d in devices
+        ]
+        with_ip = [item for item in items if item[3].strip()]
+        if not with_ip:
+            QMessageBox.information(
+                self,
+                "Ревизия сети",
+                "Ни у одного устройства сессии не записан IP-адрес.\n"
+                "Заполните IP в карточках и повторите.",
+            )
+            return
+        dialog = NetAuditDialog(
+            items,
+            repo=self.repo,
+            session_id=self.session_id,
+            paths=self.paths,
+            voice=self.voice,
+            parent=self,
+        )
+        dialog.exec()
+        self.refresh()

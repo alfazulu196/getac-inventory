@@ -11,10 +11,12 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMainWindow,
     QMessageBox,
     QTabWidget,
     QVBoxLayout,
@@ -207,6 +209,17 @@ class SettingsDialog(QDialog):
         self.backups_label.setWordWrap(True)
         form.addRow("Резервные копии", self.backups_label)
 
+        self.restore_btn = secondary_button(
+            "↩ Восстановить из копии…", height=44, font_size=14)
+        self.restore_btn.setToolTip(
+            "FR-60 (v1.6.9): восстановить базу из резервной копии\n"
+            "(data\\backups) без ручного переименования файлов.\n"
+            "Текущая база сохранится как safety-копия; приложение закроется —\n"
+            "запустите его заново, чтобы открыть восстановленную базу."
+        )
+        self.restore_btn.clicked.connect(self._restore_from_backup)
+        form.addRow("", self.restore_btn)
+
         self.field_check = QCheckBox(
             "Полевая тема (высококонтрастная, для солнца)"
         )
@@ -246,6 +259,79 @@ class SettingsDialog(QDialog):
             )
 
         self.field_check.setChecked(bool(getattr(self.config, "field_mode", False)))
+
+    def _restore_from_backup(self) -> None:
+        """FR-60 (v1.6.9): восстановление базы из копии без ручной возни.
+
+        Порядок критичен (база в WAL-режиме): сначала safety-копия через
+        SQLite backup API (консистентна при живом WAL), затем закрытие
+        соединения (checkpoint в старый файл — его всё равно заменяем),
+        затем подмена файла. После — закрытие приложения: восстановленную
+        базу открывает следующий запуск.
+        """
+        from inventory.services.backup import (  # noqa: PLC0415
+            backup_database,
+            restore_database,
+        )
+
+        chosen, _f = QFileDialog.getOpenFileName(
+            self,
+            "Выберите копию базы",
+            str(self.paths["backups"]),
+            "Копии базы (*.db)",
+        )
+        if not chosen:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Восстановление базы",
+            f"Восстановить базу из копии {Path(chosen).name}?\n\n"
+            "Текущая база сохранится как safety-копия before_restore_*.db,\n"
+            "затем приложение закроется — запустите его заново.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if not Path(chosen).exists():
+            QMessageBox.critical(
+                self, "Восстановление базы",
+                f"Копия не найдена на диске:\n{chosen}\n\n"
+                "База не тронута.")
+            return
+        try:
+            backup_database(
+                self.paths["db"], self.paths["backups"], prefix="before_restore")
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(
+                self, "Восстановление базы",
+                f"Не удалось сделать safety-копию текущей базы:\n{exc}\n\n"
+                "База не тронута.")
+            return
+        # Точка невозврата: закрываем соединение (checkpoint старого WAL
+        # в файл, который сейчас заменится) и подменяем базу.
+        try:
+            if self.repo is not None:
+                self.repo.db.close()
+            restore_database(chosen, self.paths["db"])
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(
+                self, "Восстановление базы",
+                f"Не удалось восстановить базу:\n{exc}\n\n"
+                "Приложение закроется — запустите его заново.")
+        else:
+            QMessageBox.information(
+                self,
+                "Восстановление базы",
+                "База восстановлена из копии.\n"
+                "Приложение сейчас закроется — запустите его заново.",
+            )
+        window = self.parent()
+        while window is not None and not isinstance(window, QMainWindow):
+            window = window.parent()
+        self.accept()
+        if window is not None:
+            window.close()
 
     def _save(self) -> None:
         mode = self.mode_combo.currentData()

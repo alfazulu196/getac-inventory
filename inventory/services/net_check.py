@@ -62,6 +62,33 @@ def _creation_flags() -> int:
     return subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
+def _oem_encoding() -> str:
+    """Кодировка консольных утилит Windows (ping/arp): OEM, не UTF-8!
+
+    Приложение запускается с -X utf8: subprocess text=True тогда декодирует
+    вывод ping как UTF-8 и падает на кириллице (байт 0x8E из cp866).
+    Берём кодовую страницу консоли напрямую (GetOEMCP).
+    """
+    try:
+        import ctypes
+
+        return f"cp{ctypes.windll.kernel32.GetOEMCP()}"
+    except Exception:  # noqa: BLE001 — не Windows / нет ctypes
+        return "utf-8"
+
+
+_OEM = _oem_encoding()
+
+
+def _decode_output(raw: bytes | str | None) -> str:
+    """Вывод ping/arp → str. Маркеры-ASCII выживают при любой кодировке."""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):  # фейковый runner в тестах отдаёт str
+        return raw
+    return raw.decode(_OEM, errors="replace")
+
+
 def ping_host(
     ip: str,
     timeout_ms: int = PING_TIMEOUT_MS,
@@ -70,11 +97,11 @@ def ping_host(
     """Один ping: (отвечает, латентность мс или None если «<1 мс»)."""
     proc = runner(
         ["ping", "-n", "1", "-w", str(timeout_ms), ip],
-        capture_output=True, text=True,
+        capture_output=True,
         timeout=timeout_ms / 1000 + 4,
         creationflags=_creation_flags(),
     )
-    out = f"{proc.stdout or ''}\n{proc.stderr or ''}"
+    out = f"{_decode_output(proc.stdout)}\n{_decode_output(proc.stderr)}"
     if not _PING_OK_RE.search(out):
         return False, None
     match = _LATENCY_RE.search(out)
@@ -87,11 +114,11 @@ def arp_table(runner=subprocess.run) -> dict[str, str]:
     """`arp -a` → {IP: нормализованный MAC}; язык консоли не важен."""
     proc = runner(
         ["arp", "-a"],
-        capture_output=True, text=True, timeout=10,
+        capture_output=True, timeout=10,
         creationflags=_creation_flags(),
     )
     table: dict[str, str] = {}
-    for line in (proc.stdout or "").splitlines():
+    for line in _decode_output(proc.stdout).splitlines():
         match = _ARP_LINE_RE.search(line)
         if match:
             table[match.group(1)] = normalize_mac(match.group(2))
