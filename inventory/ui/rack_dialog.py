@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -43,6 +44,9 @@ _TYPE_INDEX = {t.code: i for i, t in enumerate(DEVICE_TYPES)}
 
 _COL_CHECK, _COL_TYPE, _COL_NAME, _COL_POS, _COL_NOTE = 0, 1, 2, 3, 4
 _HEADERS = ["", "Тип", "Бренд/модель", "Юнит", "Что видно"]
+
+# Подсветка возможных дублей (v1.6.11): мягкий жёлтый фон.
+_MARK_BG = QColor("#fdebd0")
 
 DRAFT_KEY = "rack_draft"  # settings: {session_id, location_id, rows, saved_at}
 
@@ -93,6 +97,7 @@ class RackDialog(QDialog):
     # ------------------------------------------------------------------
     def _init_draft(self) -> None:
         self._loading = False  # флаг: ресторация строк — не ловить itemChanged
+        self._marking = False  # подсветка дублей меняет items — не ловить
         self._draft_timer = QTimer(self)
         self._draft_timer.setSingleShot(True)
         self._draft_timer.setInterval(800)  # дебаунс правок
@@ -100,10 +105,15 @@ class RackDialog(QDialog):
         self.table.itemChanged.connect(self._on_item_changed)
 
     def _on_item_changed(self, _item) -> None:
+        if self._marking:
+            return
         if not self._loading:
             self._draft_timer.start()
 
     def _save_draft(self) -> None:
+        # Ручные правки (имя/позиция) — пересчитать подсветку дублей;
+        # вызов идемпотентен, а debounce 0,8 с не даёт мелькать статусу.
+        self._mark_duplicates()
         rows = self._rows_snapshot()
         if not rows:
             return
@@ -162,6 +172,7 @@ class RackDialog(QDialog):
             "заново («🔁 Ещё кадр»)."
         )
         self.status_label.setStyleSheet("color: #2ecc71;")
+        self._mark_duplicates()  # в черновике могли остаться дубли
         return True
 
     # ------------------------------------------------------------------
@@ -405,6 +416,71 @@ class RackDialog(QDialog):
         note_item = self.table.item(row, _COL_NOTE)
         if note_item and not note_item.text().strip() and device.detail:
             note_item.setText(device.detail)
+
+    # ------------------------------------------------------------------
+    # Возможные дубли (v1.6.11)
+    # ------------------------------------------------------------------
+    def _mark_duplicates(self) -> None:
+        """Подсветка возможных дублей: тот же бренд/модель на другой строке.
+
+        Живой bench v1.6.10 показал реальный кейс: соседние кадры одной
+        стойки читают одну коробку на разных позициях (TP-LINK и на U7,
+        и на U8) — мёрж по позиции честно оставляет обе строки. Подсветка
+        (мягкий жёлтый фон на имени и позиции + tooltip) и сводка в
+        статусе. Решение «одна коробка или две одинаковые вплотную» —
+        за человеком: снять галочку, поправить позицию или удалить строку.
+        """
+        self._marking = True
+        try:
+            for row in range(self.table.rowCount()):
+                for col in (_COL_NAME, _COL_POS):
+                    item = self.table.item(row, col)
+                    if item:
+                        item.setBackground(QBrush())
+                        item.setToolTip("")
+
+            rows_by_title: dict[str, list[int]] = {}
+            for row in range(self.table.rowCount()):
+                name_item = self.table.item(row, _COL_NAME)
+                title = name_item.text() if name_item else ""
+                norm = normalize_title(title) if title.strip() else ""
+                if norm:
+                    rows_by_title.setdefault(norm, []).append(row)
+
+            groups: list[str] = []
+            for rows in rows_by_title.values():
+                if len(rows) < 2:
+                    continue
+                positions = [
+                    self.table.item(r, _COL_POS).text().strip()
+                    if self.table.item(r, _COL_POS) else ""
+                    for r in rows
+                ]
+                title = self.table.item(rows[0], _COL_NAME).text()
+                groups.append(
+                    f"{title} ({', '.join(p or '—' for p in positions)})")
+                tooltip = (
+                    "⚠ Возможный дубль: тот же бренд/модель записан ещё и "
+                    "на другой позиции. Проверьте, одна ли это коробка "
+                    "(дрейф позиций между кадрами) или две одинаковые "
+                    "вплотную."
+                )
+                for row in rows:
+                    for col in (_COL_NAME, _COL_POS):
+                        item = self.table.item(row, col)
+                        if item:
+                            item.setBackground(QBrush(_MARK_BG))
+                            item.setToolTip(tooltip)
+
+            base = self.status_label.text().split(" · ⚠ возможные дубли:")[0]
+            if groups:
+                self.status_label.setText(
+                    f"{base} · ⚠ возможные дубли: " + "; ".join(groups))
+                self.status_label.setStyleSheet("color: #e67e22;")
+            elif self.status_label.text() != base:
+                self.status_label.setText(base)  # дублей нет — убрать метку
+        finally:
+            self._marking = False
 
     def _append_row(self, device: RackDevice | None = None) -> int:
         rd = {

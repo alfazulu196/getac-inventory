@@ -220,6 +220,16 @@ class SettingsDialog(QDialog):
         self.restore_btn.clicked.connect(self._restore_from_backup)
         form.addRow("", self.restore_btn)
 
+        self.verify_btn = secondary_button(
+            "🔍 Проверить копии", height=44, font_size=14)
+        self.verify_btn.setToolTip(
+            "v1.6.11: сверить резервные копии с SHA-256-манифестом.\n"
+            "Побитые/пропавшие/без записи — будут перечислены;\n"
+            "перед восстановлением из копии стоит заглянуть сюда."
+        )
+        self.verify_btn.clicked.connect(self._verify_backups)
+        form.addRow("", self.verify_btn)
+
         self.field_check = QCheckBox(
             "Полевая тема (высококонтрастная, для солнца)"
         )
@@ -332,6 +342,58 @@ class SettingsDialog(QDialog):
         self.accept()
         if window is not None:
             window.close()
+
+    def _verify_backups(self) -> None:
+        """v1.6.11: сводка целостности копий по SHA-256-манифесту в UI.
+
+        Замыкает контур бэкапов: сервис verify_manifest существовал,
+        но из UI не вызывался — поле не могло узнать, какие копии
+        надёжны, не открывая файлы руками.
+        """
+        from inventory.services.backup import verify_manifest  # noqa: PLC0415
+
+        backups = Path(self.paths["backups"])
+        copies = sorted(backups.glob("*.db")) if backups.exists() else []
+        if not copies:
+            QMessageBox.information(
+                self,
+                "Проверка копий",
+                "Резервных копий ещё нет — они создаются автоматически\n"
+                "при закрытии приложения (data\\backups).",
+            )
+            return
+        problems = verify_manifest(backups)
+        bad = {str(p).split(":", 1)[0] for p in problems}
+        if not problems:
+            QMessageBox.information(
+                self,
+                "Проверка копий",
+                f"Все копии ({len(copies)} шт) в порядке: SHA-256 совпадает\n"
+                "с манифестом. Восстановление из любой копии безопасно.",
+            )
+            return
+        lines = []
+        for path in copies:
+            problem = next(
+                (p for p in problems if str(p).startswith(path.name + ":")),
+                "",
+            )
+            lines.append(
+                f"{'❌' if path.name in bad else '✅'} {path.name}"
+                + (f" — {problem.split(':', 1)[1].strip()}" if problem
+                   else " — ок")
+            )
+        body = "\n".join(lines[:12])
+        if len(lines) > 12:
+            body += f"\n… и ещё {len(lines) - 12}"
+        QMessageBox.warning(
+            self,
+            "Проверка копий",
+            f"Проверено копий: {len(copies)} (по SHA-256-манифесту)\n\n"
+            f"{body}\n\n"
+            "Побитые копии для восстановления не используйте —\n"
+            "выберите другую копию.",
+        )
 
     def _save(self) -> None:
         mode = self.mode_combo.currentData()
