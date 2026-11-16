@@ -25,10 +25,15 @@ def _qapp() -> QApplication:
     return QApplication.instance()
 
 
-def _dialog(tmp_path: Path) -> RackDialog:
+def _dialog(tmp_path: Path, monkeypatch) -> RackDialog:
     _qapp()
     rack_mod.RackDialog._start_warmup = lambda self: None
     rack_mod.RackDialog._another_shot = lambda self: None
+    # Без ollama (CI) _begin() показывает МОДАЛЬНЫЙ information — в offscreen
+    # он вешает прогон навсегда (грабли test_rack_duplicates). Патчим оба:
+    monkeypatch.setattr(rack_mod, "ollama_status", lambda: (False, "нет ИИ"))
+    monkeypatch.setattr(
+        rack_mod.QMessageBox, "information", lambda *a, **k: None)
     work = tmp_path / "work"
     work.mkdir(exist_ok=True)
     repo = InventoryRepository(Database(tmp_path / "rack.db"))
@@ -54,8 +59,8 @@ def _rows(dialog: RackDialog) -> list[dict]:
 
 
 # ------------------------------------------------------------- подписи строк
-def test_row_label(tmp_path: Path) -> None:
-    dialog = _dialog(tmp_path)
+def test_row_label(tmp_path: Path, monkeypatch) -> None:
+    dialog = _dialog(tmp_path, monkeypatch)
     dialog._append_row(RackDevice(
         type_code="switch", brand="TP-LINK", model="TL-SG1016", position="U7"))
     dialog._append_row(None)
@@ -65,9 +70,9 @@ def test_row_label(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------- меню
-def test_menu_lists_duplicates_first(tmp_path: Path) -> None:
+def test_menu_lists_duplicates_first(tmp_path: Path, monkeypatch) -> None:
     """В подменю слияния дубли идут первыми и помечены «≈ дубль»."""
-    dialog = _dialog(tmp_path)
+    dialog = _dialog(tmp_path, monkeypatch)
     dialog._append_row(RackDevice(
         type_code="switch", brand="TP-LINK", model="TL-SG1016", position="U7"))
     dialog._append_row(RackDevice(
@@ -89,8 +94,8 @@ def test_menu_lists_duplicates_first(tmp_path: Path) -> None:
     dialog.reject()
 
 
-def test_menu_merge_disabled_for_single_row(tmp_path: Path) -> None:
-    dialog = _dialog(tmp_path)
+def test_menu_merge_disabled_for_single_row(tmp_path: Path, monkeypatch) -> None:
+    dialog = _dialog(tmp_path, monkeypatch)
     dialog._append_row(RackDevice(
         type_code="switch", brand="Cisco", model="WS-C2960", position="U10"))
     menu = dialog._build_row_menu(0)
@@ -100,9 +105,9 @@ def test_menu_merge_disabled_for_single_row(tmp_path: Path) -> None:
 
 
 # ------------------------------------------------------------------ слияние
-def test_merge_fills_empty_fields_and_removes_source(tmp_path: Path) -> None:
+def test_merge_fills_empty_fields_and_removes_source(tmp_path: Path, monkeypatch) -> None:
     """Правый клик по ЛИШНЕЙ строке: её данные дополняют приёмник."""
-    dialog = _dialog(tmp_path)
+    dialog = _dialog(tmp_path, monkeypatch)
     dialog._append_row(RackDevice(
         type_code="switch", brand="TP-LINK", model="TL-SG1016",
         position="U7", detail=""))
@@ -120,8 +125,8 @@ def test_merge_fills_empty_fields_and_removes_source(tmp_path: Path) -> None:
     dialog.reject()
 
 
-def test_merge_keeps_filled_target_values(tmp_path: Path) -> None:
-    dialog = _dialog(tmp_path)
+def test_merge_keeps_filled_target_values(tmp_path: Path, monkeypatch) -> None:
+    dialog = _dialog(tmp_path, monkeypatch)
     dialog._append_row(RackDevice(
         type_code="switch", brand="TP-LINK", model="TL-SG1016",
         position="U7", detail="видно вентиляторы"))
@@ -136,9 +141,9 @@ def test_merge_keeps_filled_target_values(tmp_path: Path) -> None:
     dialog.reject()
 
 
-def test_merge_takes_type_from_source_when_target_other(tmp_path: Path) -> None:
+def test_merge_takes_type_from_source_when_target_other(tmp_path: Path, monkeypatch) -> None:
     """Ручная строка («other») + распознанный дубль → тип от распознанной."""
-    dialog = _dialog(tmp_path)
+    dialog = _dialog(tmp_path, monkeypatch)
     dialog._append_row(RackDevice(
         type_code="psu", brand="APC", model="AP7921", position="U3"))
     dialog._append_row(None)  # ручная строка: other, без имени
@@ -152,8 +157,8 @@ def test_merge_takes_type_from_source_when_target_other(tmp_path: Path) -> None:
     dialog.reject()
 
 
-def test_merge_updates_draft_and_duplicate_marks(tmp_path: Path) -> None:
-    dialog = _dialog(tmp_path)
+def test_merge_updates_draft_and_duplicate_marks(tmp_path: Path, monkeypatch) -> None:
+    dialog = _dialog(tmp_path, monkeypatch)
     dialog._append_row(RackDevice(
         type_code="psu", brand="APC", model="AP7921", position="U5"))
     dialog._append_row(RackDevice(
@@ -171,7 +176,7 @@ def test_merge_updates_draft_and_duplicate_marks(tmp_path: Path) -> None:
 
 
 def test_ask_merge_confirm_yes(tmp_path: Path, monkeypatch) -> None:
-    dialog = _dialog(tmp_path)
+    dialog = _dialog(tmp_path, monkeypatch)
     dialog._append_row(RackDevice(
         type_code="psu", brand="APC", model="AP7921", position="U5"))
     dialog._append_row(RackDevice(
@@ -183,7 +188,7 @@ def test_ask_merge_confirm_yes(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_ask_merge_confirm_no(tmp_path: Path, monkeypatch) -> None:
-    dialog = _dialog(tmp_path)
+    dialog = _dialog(tmp_path, monkeypatch)
     dialog._append_row(RackDevice(
         type_code="psu", brand="APC", model="AP7921", position="U5"))
     dialog._append_row(RackDevice(
@@ -196,7 +201,7 @@ def test_ask_merge_confirm_no(tmp_path: Path, monkeypatch) -> None:
 
 # ---------------------------------------------------------------- удаление
 def test_delete_row_keeps_rest(tmp_path: Path, monkeypatch) -> None:
-    dialog = _dialog(tmp_path)
+    dialog = _dialog(tmp_path, monkeypatch)
     dialog._append_row(RackDevice(
         type_code="switch", brand="Cisco", model="WS-C2960", position="U10"))
     dialog._append_row(RackDevice(
@@ -214,7 +219,7 @@ def test_delete_row_keeps_rest(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_delete_last_row_clears_draft(tmp_path: Path, monkeypatch) -> None:
-    dialog = _dialog(tmp_path)
+    dialog = _dialog(tmp_path, monkeypatch)
     dialog._append_row(RackDevice(
         type_code="switch", brand="Cisco", model="WS-C2960", position="U10"))
     _answer(monkeypatch, yes=True)
@@ -228,7 +233,7 @@ def test_delete_last_row_clears_draft(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_delete_row_confirm_no(tmp_path: Path, monkeypatch) -> None:
-    dialog = _dialog(tmp_path)
+    dialog = _dialog(tmp_path, monkeypatch)
     dialog._append_row(RackDevice(
         type_code="switch", brand="Cisco", model="WS-C2960", position="U10"))
     _answer(monkeypatch, yes=False)
