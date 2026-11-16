@@ -13,6 +13,7 @@ import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 MANIFEST_NAME = "manifest.json"
 
@@ -212,3 +213,87 @@ def verify_manifest(backups_dir: str | Path) -> list[str]:
     for name in sorted(entries):
         issues.append(f"{name}: файла нет на диске")
     return issues
+
+
+def copy_backups_to_target(
+    backups_dir: str | Path, target_dir: str | Path
+) -> dict[str, Any]:
+    """Копирует резервные копии (+ манифест) на съёмный носитель (v1.6.12).
+
+    Полевая страховка: после выезда копии базы должны уехать с V110
+    на флешку. Файл копируется и ПЕРЕПРОВЕРЯЕТСЯ на месте назначения:
+    хеш флешки сверяется с манифестом источника (а у копий без записи —
+    с хешем источника). Побитая в источнике копия не копируется вовсе.
+
+    Возвращает сводку для UI/тестов:
+      target   — куда легли копии;
+      copied   — имена скопированных и проверенных *.db;
+      warnings — скопировано, но есть оговорка (нет записи в манифесте…);
+      skipped  — не скопировано (побита в источнике / сбой записи);
+      bytes    — суммарный объём скопированных копий.
+    """
+    backups_dir = Path(backups_dir)
+    target_dir = Path(target_dir)
+    summary: dict[str, Any] = {
+        "target": str(target_dir),
+        "copied": [],
+        "warnings": [],
+        "skipped": [],
+        "bytes": 0,
+    }
+    copies = sorted(backups_dir.glob("*.db")) if backups_dir.exists() else []
+    if not copies:
+        summary["warnings"].append("Резервных копий ещё нет — копировать нечего")
+        return summary
+
+    entries = {
+        str(e.get("file") or ""): e
+        for e in _read_manifest(backups_dir)
+    }
+    target_dir.mkdir(parents=True, exist_ok=True)
+    manifest_src = backups_dir / MANIFEST_NAME
+    if manifest_src.exists():
+        try:
+            shutil.copy2(manifest_src, target_dir / MANIFEST_NAME)
+        except OSError as exc:
+            summary["warnings"].append(
+                f"{MANIFEST_NAME}: не скопирован ({exc.strerror or exc})")
+
+    for path in copies:
+        entry = entries.get(path.name) or {}
+        expected = str(entry.get("sha256") or "")
+        try:
+            source_hash = _hash_file(path)
+        except OSError as exc:
+            summary["skipped"].append(
+                f"{path.name}: не читается ({exc.strerror or exc})")
+            continue
+        if expected and source_hash != expected:
+            summary["skipped"].append(
+                f"{path.name}: SHA-256 не совпал — копия побита в источнике,"
+                " пропущена")
+            continue
+        destination = target_dir / path.name
+        try:
+            shutil.copy2(path, destination)
+            flash_hash = _hash_file(destination)
+        except OSError as exc:
+            summary["skipped"].append(
+                f"{path.name}: не записалась ({exc.strerror or exc})")
+            continue
+        if flash_hash != source_hash:
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+            summary["skipped"].append(
+                f"{path.name}: хеш на флешке не совпал — сбой записи;"
+                " скопируйте заново")
+            continue
+        summary["copied"].append(path.name)
+        summary["bytes"] += path.stat().st_size
+        if not expected:
+            summary["warnings"].append(
+                f"{path.name}: нет записи в манифесте — целостность сверена"
+                " копия-с-копией")
+    return summary

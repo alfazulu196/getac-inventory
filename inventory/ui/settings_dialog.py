@@ -2,6 +2,9 @@
 """Настройки сканера, голоса и данных."""
 from __future__ import annotations
 
+import os
+import string
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
@@ -14,6 +17,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -230,6 +234,17 @@ class SettingsDialog(QDialog):
         self.verify_btn.clicked.connect(self._verify_backups)
         form.addRow("", self.verify_btn)
 
+        self.usb_btn = secondary_button(
+            "💾 Копии на флешку…", height=44, font_size=14)
+        self.usb_btn.setToolTip(
+            "v1.6.12: скопировать резервные копии (data\\backups) и\n"
+            "SHA-256-манифест на съёмный диск. Хеш каждой копии сверяется\n"
+            "на флешке после записи — побитая не уедет. Копии базы —\n"
+            "единственный шанс откатиться в поле, держите их не только на V110."
+        )
+        self.usb_btn.clicked.connect(self._copy_backups_to_usb)
+        form.addRow("", self.usb_btn)
+
         self.field_check = QCheckBox(
             "Полевая тема (высококонтрастная, для солнца)"
         )
@@ -395,6 +410,95 @@ class SettingsDialog(QDialog):
             "выберите другую копию.",
         )
 
+    def _copy_backups_to_usb(self) -> None:
+        """v1.6.12: унести копии базы с V110 на съёмный диск.
+
+        Выбор носителя (съёмные диски Windows + «Другая папка…») →
+        папка Инвентаризация_копии\\<штамп> → сервис копирует *.db
+        и манифест, перепроверяя SHA-256 на месте назначения.
+        """
+        from inventory.services.backup import (  # noqa: PLC0415
+            copy_backups_to_target,
+        )
+
+        drives = _removable_drives()
+        options = drives + ["Другая папка…"]
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Копии на флешку",
+            "Куда скопировать резервные копии?",
+            options,
+            0,
+            False,
+        )
+        if not ok:
+            return
+        if choice == "Другая папка…":
+            chosen = QFileDialog.getExistingDirectory(
+                self, "Папка для копий резервных копий")
+            if not chosen:
+                return
+            target_root = Path(chosen)
+        else:
+            target_root = Path(choice) / "Инвентаризация_копии"
+        target = target_root / (
+            "inventory_backup_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        )
+
+        backups = Path(self.paths["backups"])
+        copies = sorted(backups.glob("*.db")) if backups.exists() else []
+        if not copies:
+            QMessageBox.information(
+                self,
+                "Копии на флешку",
+                "Резервных копий ещё нет — они создаются автоматически\n"
+                "при закрытии приложения (data\\backups).\n"
+                "Копировать нечего.",
+            )
+            return
+
+        self.usb_btn.setEnabled(False)
+        self.usb_btn.setText("⏳ Копирую…")
+        QApplication.processEvents()
+        try:
+            result = copy_backups_to_target(backups, target)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(
+                self, "Копии на флешку", f"Не удалось скопировать:\n{exc}")
+            return
+        finally:
+            self.usb_btn.setEnabled(True)
+            self.usb_btn.setText("💾 Копии на флешку…")
+
+        copied = result.get("copied", [])
+        skipped = result.get("skipped", [])
+        warnings = result.get("warnings", [])
+        if not warnings and not skipped:
+            QMessageBox.information(
+                self,
+                "Копии на флешку",
+                f"Скопировано копий: {len(copied)} "
+                f"({result.get('bytes', 0) / (1024 * 1024):.1f} МБ)\n"
+                f"Куда: {result.get('target')}\n\n"
+                "SHA-256 каждой копии сверён НА ФЛЕШКЕ — запись прошла\n"
+                "без ошибок, копии можно везти/оставлять как страховку.",
+            )
+            return
+        lines = [f"✅ {name} — записана, хеш совпал" for name in copied[:10]]
+        if len(copied) > 10:
+            lines.append(f"… и ещё {len(copied) - 10}")
+        lines += [f"⚠ {w}" for w in warnings[:6]]
+        lines += [f"❌ {s}" for s in skipped[:6]]
+        QMessageBox.warning(
+            self,
+            "Копии на флешку",
+            f"Скопировано: {len(copied)} из {len(copied) + len(skipped)}\n"
+            f"Куда: {result.get('target')}\n\n"
+            + "\n".join(lines)
+            + "\n\nСкопированные с ошибкой копии страховкой не считайте —\n"
+            "сначала «🔍 Проверить копии».",
+        )
+
     def _save(self) -> None:
         mode = self.mode_combo.currentData()
         port = self.port_combo.currentText().strip()
@@ -438,3 +542,29 @@ class SettingsDialog(QDialog):
         if app is not None:
             apply_app_style(app, field_mode=self.config.field_mode)
         self.accept()
+
+
+def _removable_drives() -> list[str]:
+    """Съёмные диски Windows (DRIVE_REMOVABLE) — кандидаты «на флешку».
+
+    Ноль зависимостей: GetLogicalDrives + GetDriveTypeW из kernel32.
+    Не-Windows (тесты в другой ОС) — пустой список: UI тогда просто
+    предложит «Другая папка…».
+    """
+    if os.name != "nt":
+        return []
+    try:
+        import ctypes  # noqa: PLC0415
+
+        kernel32 = ctypes.windll.kernel32
+    except (ImportError, AttributeError):  # pragma: no cover - не Windows
+        return []
+    drives: list[str] = []
+    bitmask = kernel32.GetLogicalDrives()
+    for index, letter in enumerate(string.ascii_uppercase):
+        if not (bitmask >> index) & 1:
+            continue
+        root = f"{letter}:\\"
+        if kernel32.GetDriveTypeW(root) == 2:  # DRIVE_REMOVABLE
+            drives.append(root)
+    return drives

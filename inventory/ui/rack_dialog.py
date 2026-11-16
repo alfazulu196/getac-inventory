@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QMessageBox,
     QTableWidget,
     QTableWidgetItem,
@@ -208,6 +209,8 @@ class RackDialog(QDialog):
         self.table.setColumnWidth(_COL_TYPE, 190)
         self.table.setColumnWidth(_COL_NAME, 260)
         self.table.setColumnWidth(_COL_POS, 90)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_row_menu)
         root.addWidget(self.table, 1)
 
         buttons = QHBoxLayout()
@@ -481,6 +484,156 @@ class RackDialog(QDialog):
                 self.status_label.setText(base)  # дублей нет — убрать метку
         finally:
             self._marking = False
+
+    # ------------------------------------------------------------------
+    # Контекстное меню строки (v1.6.12): объединение дубликатов, удаление
+    # ------------------------------------------------------------------
+    def _row_label(self, row: int) -> str:
+        name_item = self.table.item(row, _COL_NAME)
+        title = (name_item.text() or "").strip() if name_item else ""
+        pos_item = self.table.item(row, _COL_POS)
+        pos = (pos_item.text() or "").strip() if pos_item else ""
+        if not title and not pos:
+            return f"№{row + 1} (пустая строка)"
+        label = f"№{row + 1} «{title or 'без модели'}»"
+        if pos:
+            label += f" ({pos})"
+        return label
+
+    def _build_row_menu(self, row: int) -> QMenu:
+        """Меню правой кнопки: слияние с дублями (сверху) и с любой строкой."""
+        menu = QMenu(self)
+        name_item = self.table.item(row, _COL_NAME)
+        title_norm = (
+            normalize_title(name_item.text() or "")
+            if name_item and name_item.text().strip() else ""
+        )
+        dup_rows: list[int] = []
+        other_rows: list[int] = []
+        for r in range(self.table.rowCount()):
+            if r == row:
+                continue
+            item = self.table.item(r, _COL_NAME)
+            norm = (
+                normalize_title(item.text() or "")
+                if item and item.text().strip() else ""
+            )
+            if title_norm and norm and norm == title_norm:
+                dup_rows.append(r)
+            else:
+                other_rows.append(r)
+
+        merge_menu = menu.addMenu("🔗 Объединить со строкой…")
+        if not dup_rows and not other_rows:
+            merge_menu.setEnabled(False)
+        else:
+            merge_menu.setToolTip("")
+            if dup_rows:
+                for r in dup_rows:
+                    act = merge_menu.addAction(f"≈ дубль — {self._row_label(r)}")
+                    act.triggered.connect(
+                        lambda _checked=False, s=row, t=r: self._ask_merge(s, t))
+                merge_menu.addSeparator()
+            for r in other_rows:
+                act = merge_menu.addAction(self._row_label(r))
+                act.triggered.connect(
+                    lambda _checked=False, s=row, t=r: self._ask_merge(s, t))
+
+        delete_act = menu.addAction("🗑 Удалить строку")
+        delete_act.triggered.connect(
+            lambda _checked=False, r=row: self._ask_delete_row(r))
+        return menu
+
+    def _show_row_menu(self, pos) -> None:
+        row = self.table.rowAt(pos)
+        if row < 0 or row >= self.table.rowCount():
+            return
+        self._build_row_menu(row).exec(self.table.viewport().mapToGlobal(pos))
+
+    def _ask_merge(self, src: int, dst: int) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Объединение строк",
+            f"Объединить {self._row_label(src)}\n"
+            f"в {self._row_label(dst)}?\n\n"
+            "— пустые поля строки-приёмника заполнятся из объединяемой;\n"
+            "— заполненные поля приёмника останутся как есть;\n"
+            "— объединяемая строка будет удалена.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._merge_rows(src, dst)
+
+    def _merge_rows(self, src: int, dst: int) -> None:
+        """Ручное слияние дубликатов: приёмник пополняется пустыми полями.
+
+        Правила те же, что у слияния кадров ИИ (_merge_into_row):
+        только пустые поля приёмника; имя+бренд переезжают парой.
+        Плюс: тип «прочее» у приёмника подменяется типом источника —
+        вручную добавленная строка («other») не должна маскировать
+        реальный тип распознанной.
+        """
+        total = self.table.rowCount()
+        if src == dst or not (0 <= src < total) or not (0 <= dst < total):
+            return
+        src_label, dst_label = self._row_label(src), self._row_label(dst)
+        rows = self._rows_snapshot()
+        src_rd, dst_rd = rows[src], rows[dst]
+        if (not str(dst_rd.get("name") or "").strip()
+                and str(src_rd.get("name") or "").strip()):
+            dst_rd["name"] = src_rd["name"]
+            dst_rd["brand"] = src_rd.get("brand") or ""
+        if (dst_rd.get("type") in (None, "", "other")
+                and src_rd.get("type") and src_rd.get("type") != "other"):
+            dst_rd["type"] = src_rd["type"]
+        if not str(dst_rd.get("pos") or "").strip():
+            dst_rd["pos"] = src_rd.get("pos") or ""
+        if not str(dst_rd.get("note") or "").strip():
+            dst_rd["note"] = src_rd.get("note") or ""
+        rows.pop(src)
+
+        self._loading = True
+        try:
+            self._rewrite_rows(rows)
+        finally:
+            self._loading = False
+        self.create_btn.setEnabled(True)
+        self._update_create_caption()
+        self.status_label.setText(
+            f"🔗 Строки объединены: {src_label} → {dst_label}. "
+            "Проверьте позицию и поля приёмника."
+        )
+        self.status_label.setStyleSheet("color: #2ecc71;")
+        self._save_draft()  # черновик + пересчёт подсветки дублей
+
+    def _ask_delete_row(self, row: int) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Удаление строки",
+            f"Удалить {self._row_label(row)}?\n"
+            "Строка не попадёт в создаваемые устройства.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        label = self._row_label(row)
+        rows = self._rows_snapshot()
+        rows.pop(row)
+        self._loading = True
+        try:
+            self._rewrite_rows(rows)
+        finally:
+            self._loading = False
+        if not self.table.rowCount():
+            self.create_btn.setEnabled(False)
+            self._clear_draft()  # пустая таблица — черновик не нужен
+        else:
+            self._save_draft()
+        self._update_create_caption()
+        self.status_label.setText(f"🗑 Строка удалена: {label}.")
+        self.status_label.setStyleSheet("color: #e67e22;")
 
     def _append_row(self, device: RackDevice | None = None) -> int:
         rd = {
