@@ -6,6 +6,8 @@
   02_stoyka.png    — диалог «Стойка по фото (ИИ)» с реальным черновиком
                      из журнала бенчмарка (rack_mock.jpg, 8 юнитов)
   03_kartochka.png — карточка устройства
+  04_dannye_usb.png — Настройки → Данные (v1.6.12: копии на флешку)
+  05_stoyka_menu.png — дубли подсвечены + правый клик (v1.6.12)
 
 Запуск: python -X utf8 tools/ui_screenshots.py
 """
@@ -30,7 +32,13 @@ if os.environ.get("UI_SHOTS_OFFSCREEN"):
         )
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # noqa: E402
 
-from PyQt6.QtWidgets import QApplication, QDialog  # noqa: E402
+from PyQt6.QtCore import QPoint  # noqa: E402
+from PyQt6.QtGui import QPainter, QPixmap  # noqa: E402
+from PyQt6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QDialog,
+    QTabWidget,
+)
 
 import inventory.ui.rack_dialog as rack_module  # noqa: E402
 import inventory.ui.survey_screen as survey_module  # noqa: E402
@@ -40,6 +48,7 @@ from inventory.core.repository import InventoryRepository  # noqa: E402
 from inventory.services.rack_ai import RackAnalysis, RackDevice  # noqa: E402
 from inventory.services.voice import VoiceService  # noqa: E402
 from inventory.ui.rack_dialog import RackDialog  # noqa: E402
+from inventory.ui.settings_dialog import SettingsDialog  # noqa: E402
 from inventory.ui.survey_screen import SurveyScreen  # noqa: E402
 from inventory.ui.widgets import apply_app_style  # noqa: E402
 
@@ -83,6 +92,33 @@ def latest_mock_analysis() -> RackAnalysis:
                     elapsed_s=entry.get("elapsed_s", 0), devices=devices,
                 )
     return RackAnalysis(ok=True, model_used="qwen2.5vl:3b", elapsed_s=95.0, devices=[])
+
+
+def demo_duplicates_analysis() -> RackAnalysis:
+    """Демо-кадр с дублем (v1.6.12): TP-LINK и на U7, и на U8.
+
+    Реальный кейс bench v1.6.10: соседние кадры одной стойки читают
+    одну коробку на разных позициях — подсветка предлагает проверить.
+    """
+    return RackAnalysis(
+        ok=True,
+        model_used="qwen2.5vl:3b",
+        elapsed_s=12.0,
+        devices=[
+            RackDevice(
+                type_code="switch", brand="TP-LINK", model="TL-SG1008",
+                position="U7", detail="",
+            ),
+            RackDevice(
+                type_code="switch", brand="Cisco", model="Catalyst 2960X",
+                position="U10", detail="",
+            ),
+            RackDevice(
+                type_code="switch", brand="TP-LINK", model="TL-SG1008",
+                position="U8", detail="видно порты",
+            ),
+        ],
+    )
 
 
 def main() -> int:
@@ -162,6 +198,63 @@ def main() -> int:
         print(f"03_kartochka.png "
               f"({(OUT / '03_kartochka.png').stat().st_size // 1024} КБ)",
               flush=True)
+
+    print("настройки: вкладка «Данные»…", flush=True)
+    settings = SettingsDialog(config, paths, voice=voice, repo=repo)
+    tabs = settings.findChild(QTabWidget)
+    if tabs is not None:
+        tabs.setCurrentIndex(3)  # «Данные»: копии, флешка, полевая тема
+    settings.resize(880, 640)
+    settings.show()
+    app.processEvents()
+    settings.grab().save(str(OUT / "04_dannye_usb.png"))
+    print(f"04_dannye_usb.png "
+          f"({(OUT / '04_dannye_usb.png').stat().st_size // 1024} КБ)",
+          flush=True)
+    settings.close()
+
+    print("стойка с дублями + меню правого клика…", flush=True)
+    # Патчи ставим ПОСЛЕ снимка 02: иначе живой тёплый старт оффнет
+    # статус потоком, а вопрос «восстановить черновик?» (02 сохранил
+    # строки в репо) повесит сценарий модалкой. Методы — на классе:
+    # newInstance их унаследует, 02 к этому моменту уже отработал.
+    rack_module.ollama_status = lambda *a, **k: (True, "qwen2.5vl:3b")
+    rack_module.RackDialog._start_warmup = lambda self: None
+    rack_module.RackDialog._try_restore_draft = lambda self: False
+    dialog = RackDialog(repo, session.id, paths, location=location)
+    dialog._on_analysis(demo_duplicates_analysis(), "rack_demo.jpg")
+    dialog._mark_duplicates()
+    dialog.resize(1080, 700)
+    dialog.show()
+    app.processEvents()
+    grab = dialog.grab()
+    menu = dialog._build_row_menu(0)  # строка 1 — TP-LINK на U7 (дубль)
+    anchor = QPoint(320, 260)
+    menu.popup(anchor)  # показать, чтобы стиль отрисовал меню
+    app.processEvents()
+    # Подменю «Объединить со строкой…» раскрываем: пункт «≈ дубль — …»
+    # и есть лицо слияния v1.6.12.
+    merge_act = menu.actions()[0]
+    merge_menu = merge_act.menu()
+    merge_pos = QPoint(
+        anchor.x() + menu.width() + 2,
+        anchor.y() + menu.actionGeometry(merge_act).y(),
+    )
+    if merge_menu is not None:
+        merge_menu.popup(merge_pos)
+        app.processEvents()
+    composite = QPixmap(grab)
+    painter = QPainter(composite)
+    painter.drawPixmap(anchor, menu.grab())
+    if merge_menu is not None:
+        painter.drawPixmap(merge_pos, merge_menu.grab())
+    painter.end()
+    composite.save(str(OUT / "05_stoyka_menu.png"))
+    menu.close()
+    dialog.close()
+    print(f"05_stoyka_menu.png "
+          f"({(OUT / '05_stoyka_menu.png').stat().st_size // 1024} КБ)",
+          flush=True)
 
     screen.close()
     voice.close()
