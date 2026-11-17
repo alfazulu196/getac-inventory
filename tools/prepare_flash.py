@@ -5,8 +5,11 @@ r"""Заливка флешки для выезда одной командой 
   - модель qwen2.5vl:7b — манифест + ТОЛЬКО blobs, на которые она ссылается
     (~6 ГБ, полевая по тестам 17.11; в локальной библиотеке бывают чужие
     модели с экспериментов, скрипт их не трогает);
+    --no-model: модель не копировать — на V110 она ставится по сети
+    скриптом deploy_7b_v110.bat (V110 с интернетом), флешка ~2 ГБ;
   - release\getac_inventory_onedir.zip (или --onefile: getac_inventory.zip);
-  - полевые скрипты check_ollama.bat / backup_data.bat / backup_loop.bat;
+  - полевые скрипты check_ollama.bat / backup_data.bat / backup_loop.bat
+    и сетевое развёртывание модели deploy_7b_v110.bat + .ps1;
   - ЧЕК_ЛИСТ_ВЫЕЗД.md -> CHEK_LIST_VYEZD.md (ASCII-имя: на него ссылается
     check_ollama.bat на флешке);
   - OllamaSetup.exe, если найден (рядом с репо или в Downloads).
@@ -27,7 +30,13 @@ import shutil
 from pathlib import Path
 
 CHUNK = 4 * 1024 * 1024
-FIELD_BATS = ("check_ollama.bat", "backup_data.bat", "backup_loop.bat")
+FIELD_BATS = (
+    "check_ollama.bat",
+    "backup_data.bat",
+    "backup_loop.bat",
+    "deploy_7b_v110.bat",
+    "deploy_7b_v110.ps1",
+)
 
 
 def human(n: float) -> str:
@@ -110,6 +119,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("dest", help="буква диска или папка, например E:")
     ap.add_argument("--model", default="qwen2.5vl:7b",
                     help="модель ollama (по умолчанию qwen2.5vl:7b)")
+    ap.add_argument("--no-model", action="store_true",
+                    help="не копировать модель: на V110 она ставится по сети "
+                         "скриптом deploy_7b_v110.bat; флешка ~2 ГБ")
     ap.add_argument("--onefile", action="store_true",
                     help="брать getac_inventory.zip вместо onedir-версии")
     ap.add_argument(
@@ -146,38 +158,42 @@ def main(argv: list[str] | None = None) -> int:
     # ---- план копирования: (метка, src, dst, ожидаемый SHA-256) ----
     plan: list[tuple[str, Path, Path, str | None]] = []
 
-    manifest, blobs_dir = model_paths(ollama_dir, args.model)
-    if not manifest.is_file():
-        print(f"[X] Модель {args.model}: манифест не найден: {manifest}")
-        return 1
-    plan.append((
-        f"модель {args.model} (манифест)", manifest,
-        dest_path / "models" / manifest.relative_to(ollama_dir),
-        sha256_file(manifest) if verify else None,
-    ))
-    for i, digest in enumerate(manifest_digests(manifest), 1):
-        blob_src = blobs_dir / digest.replace(":", "-")
-        hex_hash = digest.split(":", 1)[-1]
-        if not blob_src.is_file():
-            print(f"[X] Модель {args.model}: нет blob {blob_src.name} — "
-                  "библиотека неполна, сначала ollama pull")
+    if args.no_model:
+        print("[i] --no-model: модель на флешку не кладём — на V110 её "
+              "развернёт deploy_7b_v110.bat (V110 с интернетом)")
+    else:
+        manifest, blobs_dir = model_paths(ollama_dir, args.model)
+        if not manifest.is_file():
+            print(f"[X] Модель {args.model}: манифест не найден: {manifest}")
             return 1
-        if verify and not args.dry_run:
-            if sha256_file(blob_src) != hex_hash:
-                print(f"[X] Локальный blob повреждён: {blob_src.name} — "
-                      "ollama pull заново, на флешку не годится")
-                return 1
         plan.append((
-            f"модель {args.model} (blob {i})", blob_src,
-            dest_path / "models" / "blobs" / blob_src.name, hex_hash,
+            f"модель {args.model} (манифест)", manifest,
+            dest_path / "models" / manifest.relative_to(ollama_dir),
+            sha256_file(manifest) if verify else None,
         ))
-        meta_src = ollama_dir / "metadata" / f"sha256-{hex_hash}.json"
-        if meta_src.is_file():  # v2: сайдкар с параметрами gguf-блоба
+        for i, digest in enumerate(manifest_digests(manifest), 1):
+            blob_src = blobs_dir / digest.replace(":", "-")
+            hex_hash = digest.split(":", 1)[-1]
+            if not blob_src.is_file():
+                print(f"[X] Модель {args.model}: нет blob {blob_src.name} — "
+                      "библиотека неполна, сначала ollama pull")
+                return 1
+            if verify and not args.dry_run:
+                if sha256_file(blob_src) != hex_hash:
+                    print(f"[X] Локальный blob повреждён: {blob_src.name} — "
+                          "ollama pull заново, на флешку не годится")
+                    return 1
             plan.append((
-                f"модель {args.model} (метаданные blob {i})", meta_src,
-                dest_path / "models" / "metadata" / meta_src.name,
-                sha256_file(meta_src) if verify else None,
+                f"модель {args.model} (blob {i})", blob_src,
+                dest_path / "models" / "blobs" / blob_src.name, hex_hash,
             ))
+            meta_src = ollama_dir / "metadata" / f"sha256-{hex_hash}.json"
+            if meta_src.is_file():  # v2: сайдкар с параметрами gguf-блоба
+                plan.append((
+                    f"модель {args.model} (метаданные blob {i})", meta_src,
+                    dest_path / "models" / "metadata" / meta_src.name,
+                    sha256_file(meta_src) if verify else None,
+                ))
 
     zip_src = release_dir / zip_name
     if not zip_src.is_file():
@@ -257,6 +273,9 @@ def main(argv: list[str] | None = None) -> int:
               "С побитыми копиями в поле не выезжать!")
         return 1
     print(f"\n[OK] Флешка готова: {dest_path}")
+    if args.no_model:
+        print("     Модель 7b на V110: запустить deploy_7b_v110.bat "
+              "(V110 с интернетом)")
     print("     Проверка на V110: check_ollama.bat (см. CHEK_LIST_VYEZD.md)")
     return 0
 
