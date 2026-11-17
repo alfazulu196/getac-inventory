@@ -2,9 +2,9 @@
 r"""Заливка флешки для выезда одной командой (ЧЕК_ЛИСТ_ВЫЕЗД.md, раздел 1).
 
 Копирует на целевой диск ровно то, что нужно в поле, и сверит SHA-256:
-  - модель qwen2.5vl:3b — манифест + ТОЛЬКО blobs, на которые он ссылается
-    (~3 ГБ; в локальной библиотеке бывают чужие модели с экспериментов,
-    скрипт их не трогает);
+  - модель qwen2.5vl:7b — манифест + ТОЛЬКО blobs, на которые она ссылается
+    (~6 ГБ, полевая по тестам 17.11; в локальной библиотеке бывают чужие
+    модели с экспериментов, скрипт их не трогает);
   - release\getac_inventory_onedir.zip (или --onefile: getac_inventory.zip);
   - полевые скрипты check_ollama.bat / backup_data.bat / backup_loop.bat;
   - ЧЕК_ЛИСТ_ВЫЕЗД.md -> CHEK_LIST_VYEZD.md (ASCII-имя: на него ссылается
@@ -56,17 +56,28 @@ def resolve_dest(raw: str) -> Path:
 
 
 def model_paths(ollama_dir: Path, model: str) -> tuple[Path, Path]:
+    """Манифест модели в одной из двух раскладок ollama.
+
+    v1 (ollama pull): manifests/registry.ollama.ai/library/<имя>/<тег>;
+    v2 (свежие ollama, модели из ollama create):
+    manifests-v2/ollama.com/library/<имя>/<тег>.
+    """
     lib, _, tag = model.partition(":")
     if "/" in lib:  # пользовательская модель owner/name:tag
         owner, name = lib.split("/", 1)
-        manifest = (
-            ollama_dir / "manifests" / "registry.ollama.ai" / owner / name / tag
+        tails = (
+            ollama_dir / "manifests-v2" / "ollama.com" / owner / name / tag,
+            ollama_dir / "manifests" / "registry.ollama.ai" / owner / name / tag,
         )
     else:
-        manifest = (
-            ollama_dir / "manifests" / "registry.ollama.ai" / "library" / lib / tag
+        tails = (
+            ollama_dir / "manifests-v2" / "ollama.com" / "library" / lib / tag,
+            ollama_dir / "manifests" / "registry.ollama.ai" / "library" / lib / tag,
         )
-    return manifest, ollama_dir / "blobs"
+    for tail in tails:
+        if tail.is_file():
+            return tail, ollama_dir / "blobs"
+    return tails[-1], ollama_dir / "blobs"
 
 
 def manifest_digests(manifest: Path) -> list[str]:
@@ -97,8 +108,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Заливка флешки выезда (см. ЧЕК_ЛИСТ_ВЫЕЗД.md, раздел 1)")
     ap.add_argument("dest", help="буква диска или папка, например E:")
-    ap.add_argument("--model", default="qwen2.5vl:3b",
-                    help="модель ollama (по умолчанию qwen2.5vl:3b)")
+    ap.add_argument("--model", default="qwen2.5vl:7b",
+                    help="модель ollama (по умолчанию qwen2.5vl:7b)")
     ap.add_argument("--onefile", action="store_true",
                     help="брать getac_inventory.zip вместо onedir-версии")
     ap.add_argument(
@@ -160,6 +171,13 @@ def main(argv: list[str] | None = None) -> int:
             f"модель {args.model} (blob {i})", blob_src,
             dest_path / "models" / "blobs" / blob_src.name, hex_hash,
         ))
+        meta_src = ollama_dir / "metadata" / f"sha256-{hex_hash}.json"
+        if meta_src.is_file():  # v2: сайдкар с параметрами gguf-блоба
+            plan.append((
+                f"модель {args.model} (метаданные blob {i})", meta_src,
+                dest_path / "models" / "metadata" / meta_src.name,
+                sha256_file(meta_src) if verify else None,
+            ))
 
     zip_src = release_dir / zip_name
     if not zip_src.is_file():

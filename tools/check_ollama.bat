@@ -13,7 +13,7 @@ if errorlevel 1 (
 
 for /f "delims=" %%v in ('ollama --version 2^>nul') do echo [OK] %%v
 echo.
-echo === Installed models: expecting qwen2.5vl:3b ===
+echo === Installed models: expecting qwen2.5vl:7b ===
 ollama list
 echo.
 netstat -ano | findstr :11434 | findstr LISTENING >nul
@@ -26,5 +26,5 @@ echo.
 echo === Verdict ===
 echo Model listed   - all set, run the inventory app.
 echo Model missing  - copy the USB "models" folder to %USERPROFILE%\.ollama\models
-echo                 ^(both blobs\ and manifests\^) or, with internet: ollama pull qwen2.5vl:3b
+echo                 ^(both blobs\ and manifests\^) or, with internet: ollama pull qwen2.5vl:7b
 pause
