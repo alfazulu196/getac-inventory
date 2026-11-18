@@ -1,0 +1,53 @@
+{
+ "baseline": {
+  "rack_dark.jpg": [
+   5,
+   3,
+   0,
+   0,
+   70
+  ],
+  "rack_mock.jpg": [
+   4,
+   4,
+   0,
+   0,
+   272
+  ],
+  "rack_glare.jpg": [
+   1,
+   7,
+   0,
+   2,
+   86
+  ],
+  "rack_partial.jpg": [
+   2,
+   1,
+   1,
+   0,
+   517
+  ],
+  "rack_dense15.jpg": [
+   9,
+   3,
+   1,
+   0,
+   83
+  ]
+ },
+ "runs": [
+  {
+   "variant": "combo",
+   "frame": "rack_glare",
+   "model": "qwen2.5vl:7b",
+   "prompt_sha": "c786f781582d",
+   "full": 3,
+   "partial": 3,
+   "missed": 2,
+   "extra": 0,
+   "n_rows": 6,
+   "elapsed_s": 356
+  }
+ ]
+}
