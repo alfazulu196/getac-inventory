@@ -54,8 +54,12 @@ def _ensure_app() -> None:
 
 
 def read_labels_csv(path: str | Path) -> list[dict[str, str]]:
-    """labels.csv → строки словарями; пустой файл → пустой список."""
-    with Path(path).open(encoding="utf-8", newline="") as fh:
+    """labels.csv → строки словарями; пустой файл → пустой список.
+
+    utf-8-sig: Excel при пересохранении добавляет BOM — без него первым
+    ключом станет «\\ufefflabel» и метки молча пропадут.
+    """
+    with Path(path).open(encoding="utf-8-sig", newline="") as fh:
         return [dict(row) for row in csv.DictReader(fh)]
 
 
@@ -173,8 +177,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[X] Нет файла меток: {csv_path}")
         return 1
     rows = read_labels_csv(csv_path)
+    rows = [row for row in rows if (row.get("label") or "").strip()]
     if not rows:
-        print(f"[X] {csv_path} пуст — печатать нечего")
+        print(f"[X] {csv_path}: нет строк с метками (нужна колонка label)")
         return 1
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

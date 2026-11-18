@@ -64,6 +64,17 @@ def test_read_labels_csv_roundtrip(tmp_path: Path) -> None:
                         "panel", "port")} for row in rows]
 
 
+def test_read_labels_csv_with_excel_bom(tmp_path: Path) -> None:
+    """Excel при пересохранении добавляет BOM — колонка label не должна пропасть."""
+    path = tmp_path / "bom.csv"
+    path.write_text(
+        "\ufefflabel,level,site,room,rack,panel,port\n"
+        "OBEKT-101-SH1,rack,Объект,101,Ш-1,,\n", encoding="utf-8")
+    loaded = read_labels_csv(path)
+    assert loaded[0]["label"] == "OBEKT-101-SH1"
+    assert "\ufefflabel" not in loaded[0]
+
+
 def test_render_labels_pdf(tmp_path: Path) -> None:
     _app()
     out = tmp_path / "labels.pdf"
