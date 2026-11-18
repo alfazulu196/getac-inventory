@@ -15,6 +15,7 @@ r"""TIA-606-C: генератор и валидатор иерархически
   python -X utf8 tools\tia606.py --check "A-101-SH1-A1-P01"
   python -X utf8 tools\tia606.py --db data\inventory.db
   python -X utf8 tools\tia606.py --db data\inventory.db --out data\exports\tia606
+  python -X utf8 tools\tia606.py --db data\inventory.db --pdf
 """
 from __future__ import annotations
 
@@ -166,6 +167,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="data/exports/tia606",
                     help="папка вывода labels.csv (по умолчанию "
                          "data/exports/tia606)")
+    ap.add_argument("--pdf", action="store_true",
+                    help="собрать печатный лист наклеек labels.pdf "
+                         "(A4, 65×35 мм)")
+    ap.add_argument("--pdf-out", default=None,
+                    help="путь PDF (по умолчанию рядом с labels.csv)")
     args = ap.parse_args(argv)
 
     if args.check:
@@ -191,6 +197,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[OK] Метки TIA-606: {path} ({len(rows)} стоек)")
     for w in warnings:
         print(f"[!] {w}")
+    if args.pdf:
+        try:
+            # Импорт здесь: проверка меток и CSV не должны тянуть Qt.
+            from labels_pdf import read_labels_csv, render_labels_pdf
+        except ImportError as exc:
+            print(f"[X] PDF-лист недоступен: {exc}")
+            return 1
+        pdf_path = Path(args.pdf_out) if args.pdf_out else path.with_suffix(".pdf")
+        count = render_labels_pdf(read_labels_csv(path), pdf_path)
+        print(f"[OK] Лист наклеек: {pdf_path} ({count} шт.)")
     return 0
 
 
