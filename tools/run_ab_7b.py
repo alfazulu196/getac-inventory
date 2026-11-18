@@ -6,6 +6,8 @@ r"""Пер-вариантный A/B промпта на qwen2.5vl:7b — детa
 lab_results.json на выходе, поэтому без копий поздние прогоны затёрли
 бы ранние. Последним идёт retry кадра rack_dense15 для combo — в
 вердиктном прогоне ollama не ответила за отведённое время.
+Прогон, где все кадры — ошибки, сохраняется как `*.failed.json` и
+считается сбоем, а не результатом.
 
 Запуск (отсоединённо — переживает рестарт сервера):
   Start-Process cmd.exe '/c',
@@ -13,6 +15,7 @@ lab_results.json на выходе, поэтому без копий поздн�
 """
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -31,6 +34,16 @@ JOBS: list[tuple[str, str | None]] = [
 ]
 
 
+def all_failed(path: Path) -> bool:
+    """Все кадры прогона с ошибкой: такой артефакт — не результат, а сбой."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    runs = data.get("runs") or []
+    return not runs or all("error" in run for run in runs)
+
+
 def main() -> int:
     failures = 0
     for variant, frame in JOBS:
@@ -45,9 +58,15 @@ def main() -> int:
         if code != 0:
             failures += 1
             print(f"[!] {title}: код выхода {code}", flush=True)
+        src = BENCH / "lab_results.json"
         suffix = f"{variant}_{frame}" if frame else variant
-        dest = BENCH / f"lab_results_{suffix}_7b.json"
-        shutil.copyfile(BENCH / "lab_results.json", dest)
+        if all_failed(src):
+            failures += 1
+            dest = BENCH / f"lab_results_{suffix}_7b.failed.json"
+            print(f"[!] {title}: все кадры с ошибкой — {dest.name}", flush=True)
+        else:
+            dest = BENCH / f"lab_results_{suffix}_7b.json"
+        shutil.copyfile(src, dest)
         print(f"сохранено: {dest.name}", flush=True)
     print(f"Готово, сбоев: {failures}", flush=True)
     return 1 if failures else 0
