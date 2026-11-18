@@ -53,7 +53,9 @@ DEFAULT_MANUFACTURER = "Unknown"
 NOTE_POS_RE = re.compile(r"В стойке:\s*([^\n;]+)")
 UNIT_RE = re.compile(r"U(\d+)\s*(?:[-–—]\s*U?(\d+))?", re.IGNORECASE)
 
-_TRANSLIT = {
+# Кириллица → ASCII (транслит). Публичный: переиспользуется в tools/tia606.py
+# для сегментов меток TIA-606.
+TRANSLIT = {
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
     "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
     "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
@@ -80,8 +82,8 @@ def slugify(text: str) -> str:
     """ASCII-slug: кириллица транслитом, прочее -> '-', максимум 50 символов."""
     buf = []
     for ch in (text or "").lower():
-        if ch in _TRANSLIT:
-            buf.append(_TRANSLIT[ch])
+        if ch in TRANSLIT:
+            buf.append(TRANSLIT[ch])
         elif ch.isascii() and ch.isalnum():
             buf.append(ch)
         else:
