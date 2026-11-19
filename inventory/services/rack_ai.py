@@ -312,18 +312,25 @@ def _build_payload(
     use_format: bool = True,
     use_schema: bool = True,
     stream: bool = True,
+    seed: int | None = None,
 ) -> dict:
     """Payload /api/chat. Формат по ступеням: схема → «json» → без формата.
 
     Стрим (v1.6.6) — по умолчанию: даёт диалогу живой прогресс и быструю
     отмену; ответ всё равно собирается целиком до парсинга.
+    seed нужен лаборатории для проверки воспроизводимости; в приложении
+    остаётся None — поле не должно зависеть от одного зерна.
     """
+    options: dict = {"temperature": 0.1, "num_ctx": 4096,
+                     "num_predict": NUM_PREDICT}
+    if seed is not None:
+        options["seed"] = int(seed)
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": _PROMPT, "images": [image_b64]}],
         "stream": bool(stream),
         "keep_alive": KEEP_ALIVE,
-        "options": {"temperature": 0.1, "num_ctx": 4096, "num_predict": NUM_PREDICT},
+        "options": options,
     }
     if use_format:
         # v1.6.6: по умолчанию строгая JSON-схема; отказ ollama → «json»;
@@ -560,6 +567,7 @@ def analyse_rack_photo(
     log_dir: str | Path | None = None,
     cancel_check: Callable[[], bool] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
+    seed: int | None = None,
 ) -> RackAnalysis:
     """Полный разбор фото стойки. Блокирующий; из Qt вызывать в воркере.
 
@@ -570,6 +578,7 @@ def analyse_rack_photo(
     Запросы идут стримом (stream:true): on_progress(символов, записей)
     вызывается на каждом чанке генерации; cancel_check() → True рвёт
     генерацию на ближайшем токене (RackAnalysis.cancelled).
+    seed — только для лабораторных повторов, в приложении None.
     """
     analysis = RackAnalysis()
     t0 = time.perf_counter()
@@ -620,6 +629,7 @@ def analyse_rack_photo(
                             thumb_cache[side],
                             use_format,
                             use_schema,
+                            seed=seed,
                         ),
                         _on_line,
                     )
@@ -665,7 +675,8 @@ def analyse_rack_photo(
             try:
                 raw = _post_chat_stream(
                     _build_payload(
-                        attempt_model, thumb_cache[side], use_format, use_schema
+                        attempt_model, thumb_cache[side], use_format,
+                        use_schema, seed=seed
                     ),
                     _on_line,
                 )

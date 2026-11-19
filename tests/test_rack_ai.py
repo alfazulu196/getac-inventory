@@ -183,6 +183,14 @@ def test_build_payload_format_schema_and_caps():
     assert "format" not in without
 
 
+def test_build_payload_seed_for_lab_repeats():
+    """seed — только лабораторный: в приложении его нет по умолчанию."""
+    default = rack_ai._build_payload("m", "AAAA")
+    assert "seed" not in default["options"]
+    seeded = rack_ai._build_payload("m", "AAAA", seed=42)
+    assert seeded["options"]["seed"] == 42
+
+
 def test_classify_error_400():
     claim = rack_ai._classify_error_400
     assert claim("model context window is full") == "shrink"

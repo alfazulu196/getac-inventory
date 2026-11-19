@@ -6,7 +6,7 @@
 есть адрес с токеном в виде QR-кода — телефон открывает его камерой и в
 браузере попадает на страницу с кнопками «Снять фото» / «Из галереи».
 Каждое принятое фото сохраняется в data/photos и привязывается к активному
-устройству из главного окна.
+устройству из главного окна либо уходит в открытый разбор стойки (mode="rack").
 
 Сервер не трогает базу сам: колбэк on_photo вызывается из потока сервера,
 поэтому в UI он превращается в Qt-сигнал, а запись в БД идёт из главного
@@ -112,6 +112,7 @@ class ReceivedPhoto:
     device_name: str
     location_label: str
     saved_at: str
+    mode: str = "device"
 
 
 PAGE_HTML = """<!doctype html><html lang="ru"><head>
@@ -135,7 +136,7 @@ PAGE_HTML = """<!doctype html><html lang="ru"><head>
  li {{ margin-top:6px; word-break:break-all; }}
  input[type=file] {{ display:none; }}
 </style></head><body>
-<h1>📷 Фотография устройства</h1>
+<h1 id="title">📷 Фотография устройства</h1>
 <div class="dev" id="dev">…</div>
 <div class="loc" id="loc">…</div>
 <div class="card">
@@ -152,13 +153,21 @@ async function info() {{
   try {{
     const r = await fetch(('/' + T + '/info'), {{cache:'no-store'}});
     const d = await r.json();
-    document.getElementById('dev').textContent = d.device || 'Нет активного устройства';
+    const rack = d.mode === 'rack';
+    document.getElementById('title').textContent = rack
+      ? '📷 Фото стойки' : '📷 Фотография устройства';
+    document.getElementById('dev').textContent = d.device || (rack
+      ? 'Стойка' : 'Нет активного устройства');
     document.getElementById('loc').textContent = d.location || '';
     if (!d.device) {{
-      document.getElementById('status').textContent = 'На ноутбуке нет активного устройства';
+      document.getElementById('status').textContent = rack
+        ? 'На ноутбуке не открыт разбор стойки'
+        : 'На ноутбуке нет активного устройства';
       document.getElementById('status').className = 'status err';
     }} else {{
-      document.getElementById('status').textContent = 'Готово к отправке';
+      document.getElementById('status').textContent = rack
+        ? 'Готово: фото уйдёт в разбор стойки'
+        : 'Готово к отправке';
       document.getElementById('status').className = 'status';
     }}
   }} catch (e) {{
@@ -206,7 +215,7 @@ class PhotoServer:
     """Локальный HTTP-сервер приёма фото с телефона.
 
     Вызов start() поднимает сервер и возвращает список адресов страницы;
-    колбэк on_photo(path, device_name) вызывается из потока сервера.
+    колбэк on_photo(path, device_name, mode) вызывается из потока сервера.
     """
 
     def __init__(self, photos_dir: Path, on_photo=None, port_hint: int = DEFAULT_PORT):
@@ -215,6 +224,7 @@ class PhotoServer:
         self.token = uuid.uuid4().hex[:8]
         self.device_name = ""
         self.location_label = ""
+        self.mode = "device"  # device — фото устройства, rack — разбор стойки
         self.port = 0
         self.urls: list[str] = []
         self.received: list[ReceivedPhoto] = []
@@ -267,21 +277,32 @@ class PhotoServer:
     # ------------------------------------------------------------------
     # Контекст: какое устройство сейчас активно
     # ------------------------------------------------------------------
-    def set_context(self, device_name: str, location_label: str) -> None:
+    def set_context(self, device_name: str, location_label: str,
+                    mode: str = "device") -> None:
+        """Задаёт, к чему привяжется следующее фото с телефона.
+
+        mode="rack" — фото уходит не в карточку устройства, а в открытый
+        разбор стойки; страница телефона меняет заголовок и подсказку.
+        """
         with self._context_lock:
             self.device_name = device_name
             self.location_label = location_label
+            self.mode = mode if mode in ("device", "rack") else "device"
 
-    def snapshot_context(self) -> tuple[str, str]:
+    def snapshot_context(self) -> tuple[str, str, str]:
         with self._context_lock:
-            return self.device_name, self.location_label
+            return self.device_name, self.location_label, self.mode
+
+    def current_mode(self) -> str:
+        with self._context_lock:
+            return self.mode
 
     # ------------------------------------------------------------------
     # Приём файла (вызывается из потока обработчика)
     # ------------------------------------------------------------------
     def store_photos(self, payloads: list[bytes]) -> dict:
-        device, location = self.snapshot_context()
-        prefix = _safe_prefix(device or "no-device")
+        device, location, mode = self.snapshot_context()
+        prefix = "rack" if mode == "rack" else _safe_prefix(device or "no-device")
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         saved: list[str] = []
         rejected = 0
@@ -308,7 +329,8 @@ class PhotoServer:
             except OSError as exc:
                 return {"ok": False, "error": f"не сохранить файл: {exc}"}
             logging.getLogger("inventory.photo").info(
-                "Фото с телефона принято: %s (устройство %s)", candidate.name, device or "—"
+                "Фото с телефона принято: %s (устройство %s, режим %s)",
+                candidate.name, device or "—", mode
             )
             saved.append(candidate.name)
             record = ReceivedPhoto(
@@ -316,12 +338,13 @@ class PhotoServer:
                 device_name=device,
                 location_label=location,
                 saved_at=datetime.now().strftime("%H:%M:%S"),
+                mode=mode,
             )
             with self._received_lock:
                 self.received.append(record)
             if self.on_photo:
                 try:
-                    self.on_photo(record.path, record.device_name)
+                    self.on_photo(record.path, record.device_name, record.mode)
                 except Exception:  # noqa: BLE001
                     pass
         if not saved:
@@ -410,7 +433,7 @@ class _PhotoHandler(BaseHTTPRequestHandler):
         state, token = auth
         route = urlparse(self.path).path.strip("/")
         if route == token:
-            device, location = state.snapshot_context()
+            device, location, _mode = state.snapshot_context()
             page = PAGE_HTML.format(token=state.token, dev=device, loc=location)
             payload = page.encode("utf-8")
             self.send_response(200)
@@ -419,8 +442,8 @@ class _PhotoHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
         elif route == f"{token}/info":
-            device, location = state.snapshot_context()
-            self._json({"device": device, "location": location})
+            device, location, mode = state.snapshot_context()
+            self._json({"device": device, "location": location, "mode": mode})
         else:
             self._answer(404, "Страница не найдена. Откройте адрес из приложения.", state)
 

@@ -11,18 +11,23 @@ r"""TIA-606-C: генератор и валидатор иерархически
 транслитерируется автоматически при генерации; валидатор строгий —
 метка на стикере обязана быть ASCII (кириллица в стикере = ошибка).
 
+Сами метки генерирует inventory.services.tia_labels — тот же модуль,
+которым приложение ищет локацию по QR со сканера. Здесь — слой над
+базой, CSV и печатью.
+
 Запуск:
   python -X utf8 tools\tia606.py --check "A-101-SH1-A1-P01"
   python -X utf8 tools\tia606.py --db data\inventory.db
   python -X utf8 tools\tia606.py --db data\inventory.db --out data\exports\tia606
   python -X utf8 tools\tia606.py --db data\inventory.db --pdf
+  python -X utf8 tools\tia606.py --db data\inventory.db --pdf --preview
+  python -X utf8 tools\tia606.py --db data\inventory.db --ports data\ports.csv --pdf
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,93 +36,45 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "tools") not in sys.path:
     sys.path.insert(0, str(ROOT / "tools"))  # noqa: E402
 
-from export_netbox import TRANSLIT, build_export, collect  # noqa: E402
-
-# Лимиты сегментов: метка живёт на стикере и должна быть короткой.
-# Длинные имена объектов усекаются при генерации (полные имена
-# остаются в NetBox-экспорте и в БД).
-SEGMENT_LIMITS = {"site": 8, "room": 12, "rack": 8, "panel": 8, "port": 4}
-SEGMENT_ORDER = ("site", "room", "rack", "panel", "port")
+from export_netbox import build_export, collect  # noqa: E402
+from inventory.services.tia_labels import (  # noqa: E402
+    LabelSpec,
+    generate,
+    natural_key,
+    parse,  # noqa: F401 — публичный реэкспорт для тестов и внешних вызовов
+    validate,
+)
 
 LABEL_HEADERS = ["label", "level", "site", "room", "rack", "panel", "port"]
+PORT_HEADERS = ["site", "room", "rack", "panel", "port"]
 
 
-@dataclass(frozen=True)
-class LabelSpec:
-    """Состав иерархической метки: 3 сегмента (стойка) или 5 (порт)."""
+def _add_row(rows: list[dict], seen: dict[str, str], row: dict,
+             warnings: list[str], *, allow_duplicates: bool,
+             kind: str) -> None:
+    """Добавляет строку, если метка не повторяет уже напечатанную.
 
-    site: str
-    room: str
-    rack: str
-    panel: str = ""
-    port: str = ""
-
-
-def _segment(name: str, text: str) -> str:
-    """Нормализует сегмент: транслит кириллицы, A-Z0-9, лимит длины."""
-    limit = SEGMENT_LIMITS[name]
-    buf = []
-    for ch in (text or "").lower():
-        if ch in TRANSLIT:
-            buf.append(TRANSLIT[ch])
-        elif ch.isascii() and ch.isalnum():
-            buf.append(ch.upper())
-    seg = "".join(buf)[:limit].upper()
-    if not seg:
-        raise ValueError(f"сегмент {name} пуст после нормализации: «{text}»")
-    return seg
-
-
-def generate(spec: LabelSpec) -> str:
-    """Собирает метку из спецификации: 3 сегмента — стойка, 5 — порт."""
-    parts = [_segment("site", spec.site), _segment("room", spec.room),
-             _segment("rack", spec.rack)]
-    if spec.panel or spec.port:
-        parts += [_segment("panel", spec.panel), _segment("port", spec.port)]
-    return "-".join(parts)
-
-
-def validate(label: str) -> list[str]:
-    """Список ошибок метки; пустой список — метка валидна.
-
-    Регистр не важен (стикер печатается в верхнем, но сверяем без
-    учёта регистра). Валидатор строгий по алфавиту: сегменты только
-    A-Z 0-9, автотранслит НЕ применяется — что на стикере, то и
-    проверяем.
+    Две одинаковые наклейки на разные стойки/порты хуже, чем ни одной:
+    по ним нельзя однозначно найти место. Поэтому по умолчанию дубликат
+    не печатается, а не просто предупреждается.
     """
-    parts = (label or "").strip().upper().split("-")
-    if len(parts) not in (3, 5):
-        return [f"ожидается 3 сегмента (метка стойки) или 5 (метка порта), "
-                f"сейчас {len(parts)}"]
-    errors: list[str] = []
-    for name, part in zip(SEGMENT_ORDER, parts):
-        limit = SEGMENT_LIMITS[name]
-        if not part:
-            errors.append(f"сегмент {name} пуст")
-            continue
-        if len(part) > limit:
-            errors.append(
-                f"сегмент {name} «{part}» длиннее {limit} символов")
-            continue
-        bad = "".join(ch for ch in part if not (ch.isascii() and ch.isalnum()))
-        if bad:
-            shown = bad if len(bad) <= 4 else bad[:4] + "…"
-            errors.append(
-                f"сегмент {name} «{part}»: недопустимые символы «{shown}» "
-                f"(допустимы A-Z 0-9)")
-    return errors
+    label = row["label"]
+    if label in seen:
+        where = f"«{seen[label]}» и «{row['rack']}»"
+        if allow_duplicates:
+            warnings.append(f"дубликат метки {label}: {where} (оставлен)")
+        else:
+            warnings.append(
+                f"дубликат метки {label}: {where} — {kind} не напечатан "
+                f"(--allow-duplicates, чтобы оставить)")
+            return
+    else:
+        seen[label] = row["rack"]
+    rows.append(row)
 
 
-def parse(label: str) -> LabelSpec:
-    """Разбирает метку в спецификацию; ошибка — ValueError."""
-    errors = validate(label)
-    if errors:
-        raise ValueError("; ".join(errors))
-    parts = (label or "").strip().upper().split("-")
-    return LabelSpec(*parts)
-
-
-def rack_labels(data: dict) -> tuple[list[dict], list[str]]:
+def rack_labels(data: dict, *, allow_duplicates: bool = False,
+                ) -> tuple[list[dict], list[str]]:
     """Метки стоек из данных collect(): строки CSV + предупреждения.
 
     Помещения/стойки группируются тем же кодом, что и NetBox-экспорт
@@ -134,15 +91,71 @@ def rack_labels(data: dict) -> tuple[list[dict], list[str]]:
         except ValueError as exc:
             warnings.append(f"{rack['site']} / {rack['name']}: {exc}")
             continue
-        if label in seen:
-            warnings.append(
-                f"дубликат метки {label}: «{seen[label]}» и «{rack['name']}»")
-        else:
-            seen[label] = rack["name"]
-        rows.append({"label": label, "level": "rack", "site": rack["site"],
-                     "room": rack["location"], "rack": rack["name"],
-                     "panel": "", "port": ""})
+        _add_row(rows, seen, {
+            "label": label, "level": "rack", "site": rack["site"],
+            "room": rack["location"], "rack": rack["name"],
+            "panel": "", "port": "",
+        }, warnings, allow_duplicates=allow_duplicates, kind="стойка")
     return rows, warnings
+
+
+def read_ports_csv(path: str | Path) -> list[dict[str, str]]:
+    """CSV портов: site,room,rack,panel,port (utf-8-sig — Excel BOM).
+
+    Формат намеренно тот же, что у labels.csv: один файл можно
+    подготовить в Excel и напечатать вместе со стойками. Строки без
+    обязательных полей отбрасываются с предупреждением.
+    """
+    with Path(path).open(encoding="utf-8-sig", newline="") as fh:
+        reader = csv.DictReader(fh)
+        return [
+            {key: (row.get(key) or "").strip() for key in PORT_HEADERS}
+            for row in reader
+        ]
+
+
+def port_labels(rows: list[dict[str, str]], *,
+                allow_duplicates: bool = False,
+                ) -> tuple[list[dict], list[str]]:
+    """Метки портов из подготовленного CSV; ошибки — предупреждения."""
+    result: list[dict] = []
+    warnings: list[str] = []
+    seen: dict[str, str] = {}
+    for index, row in enumerate(rows, 1):
+        missing = [key for key in PORT_HEADERS if not row.get(key)]
+        if missing:
+            warnings.append(
+                f"порты, строка {index}: нет полей {', '.join(missing)} — "
+                f"пропущена")
+            continue
+        try:
+            label = generate(LabelSpec(
+                site=row["site"], room=row["room"], rack=row["rack"],
+                panel=row["panel"], port=row["port"]))
+        except ValueError as exc:
+            warnings.append(f"порты, строка {index}: {exc}")
+            continue
+        _add_row(result, seen, {
+            "label": label, "level": "port", "site": row["site"],
+            "room": row["room"], "rack": row["rack"],
+            "panel": row["panel"], "port": row["port"],
+        }, warnings, allow_duplicates=allow_duplicates, kind="порт")
+    return result, warnings
+
+
+def sort_labels(rows: list[dict]) -> list[dict]:
+    """Объект → помещение → стойка → панель → порт, числа по порядку.
+
+    Порядок нужен для наклейки: листы идут подряд по помещениям, а не
+    в порядке появления записей в базе.
+    """
+    return sorted(rows, key=lambda row: (
+        natural_key(row.get("site", "")),
+        natural_key(row.get("room", "")),
+        natural_key(row.get("rack", "")),
+        natural_key(row.get("panel", "")),
+        natural_key(row.get("port", "")),
+    ))
 
 
 def write_labels_csv(out_dir: Path, rows: list[dict]) -> Path:
@@ -167,11 +180,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="data/exports/tia606",
                     help="папка вывода labels.csv (по умолчанию "
                          "data/exports/tia606)")
+    ap.add_argument("--ports", default=None,
+                    help="CSV портов (site,room,rack,panel,port) — "
+                         "допечатать метки портов")
+    ap.add_argument("--allow-duplicates", action="store_true",
+                    help="печатать и одинаковые метки (по умолчанию "
+                         "дубликат исключается)")
     ap.add_argument("--pdf", action="store_true",
                     help="собрать печатный лист наклеек labels.pdf "
                          "(A4, 65×35 мм)")
     ap.add_argument("--pdf-out", default=None,
                     help="путь PDF (по умолчанию рядом с labels.csv)")
+    ap.add_argument("--no-qr", action="store_true",
+                    help="без QR на наклейке (только текст)")
+    ap.add_argument("--preview", nargs="?", const="", default=None,
+                    metavar="PNG",
+                    help="нарисовать первую страницу в PNG для проверки "
+                         "без печати")
     args = ap.parse_args(argv)
 
     if args.check:
@@ -189,12 +214,27 @@ def main(argv: list[str] | None = None) -> int:
     if not db_path.is_file():
         print(f"[X] База не найдена: {db_path}")
         return 1
-    rows, warnings = rack_labels(collect(db_path))
+    rows, warnings = rack_labels(collect(db_path),
+                                 allow_duplicates=args.allow_duplicates)
+    if args.ports:
+        ports_path = Path(args.ports)
+        if not ports_path.is_file():
+            print(f"[X] Нет файла портов: {ports_path}")
+            return 1
+        port_rows, port_warnings = port_labels(
+            read_ports_csv(ports_path),
+            allow_duplicates=args.allow_duplicates)
+        rows += port_rows
+        warnings += port_warnings
+    rows = sort_labels(rows)
     if not rows:
-        print("[X] Стоек не найдено — генерировать нечего")
+        print("[X] Стоек и портов не найдено — генерировать нечего")
         return 1
     path = write_labels_csv(Path(args.out), rows)
-    print(f"[OK] Метки TIA-606: {path} ({len(rows)} стоек)")
+    racks = sum(1 for row in rows if row.get("level") == "rack")
+    ports = sum(1 for row in rows if row.get("level") == "port")
+    print(f"[OK] Метки TIA-606: {path} "
+          f"({racks} стоек, {ports} портов)")
     for w in warnings:
         print(f"[!] {w}")
     if args.pdf:
@@ -205,8 +245,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[X] PDF-лист недоступен: {exc}")
             return 1
         pdf_path = Path(args.pdf_out) if args.pdf_out else path.with_suffix(".pdf")
-        count = render_labels_pdf(read_labels_csv(path), pdf_path)
+        count = render_labels_pdf(read_labels_csv(path), pdf_path,
+                                  with_qr=not args.no_qr)
         print(f"[OK] Лист наклеек: {pdf_path} ({count} шт.)")
+    if args.preview is not None:
+        try:
+            from labels_pdf import render_labels_png
+        except ImportError as exc:
+            print(f"[X] Предпросмотр недоступен: {exc}")
+            return 1
+        preview_path = (Path(args.preview) if args.preview else
+                        path.with_name("labels_preview.png"))
+        render_labels_png(read_labels_csv(path), preview_path,
+                          with_qr=not args.no_qr)
+        print(f"[OK] Предпросмотр: {preview_path}")
     return 0
 
 

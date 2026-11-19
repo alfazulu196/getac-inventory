@@ -39,6 +39,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))  # noqa: E402
 
 from inventory.config import DEVICE_TYPES  # noqa: E402
+from inventory.core.translit import TRANSLIT  # noqa: E402
+from inventory.services.tia_labels import room_segment  # noqa: E402
 
 # Наши статусы -> DeviceStatusChoices NetBox (по смыслу).
 STATUS_MAP = {
@@ -53,15 +55,6 @@ DEFAULT_MANUFACTURER = "Unknown"
 NOTE_POS_RE = re.compile(r"В стойке:\s*([^\n;]+)")
 UNIT_RE = re.compile(r"U(\d+)\s*(?:[-–—]\s*U?(\d+))?", re.IGNORECASE)
 
-# Кириллица → ASCII (транслит). Публичный: переиспользуется в tools/tia606.py
-# для сегментов меток TIA-606.
-TRANSLIT = {
-    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
-    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
-    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
-    "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch",
-    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
-}
 
 CSV_HEADERS: dict[str, list[str]] = {
     "sites.csv": ["name", "slug", "status"],
@@ -130,10 +123,8 @@ def position_from_device(row: dict, attributes: dict) -> tuple[int, int] | None:
 
 
 def _room_name(loc: dict) -> str:
-    parts = [loc.get("building") or "", loc.get("floor") or "",
-             loc.get("room") or ""]
-    name = " - ".join(p.strip() for p in parts if p.strip())
-    return name or "Без помещения"
+    return room_segment(
+        loc.get("building") or "", loc.get("floor") or "", loc.get("room") or "")
 
 
 def _safe_attrs(raw: str | None) -> dict:

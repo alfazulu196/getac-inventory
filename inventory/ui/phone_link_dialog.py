@@ -44,7 +44,7 @@ def render_qr_pixmap(url: str, cell: int = 7) -> QPixmap | None:
     return pixmap
 
 
-def _hint_text() -> str:
+def _hint_text(mode: str = "device") -> str:
     qrcode_missing = False
     try:  # noqa: SIM105 — понятная формулировка без логов
         import qrcode  # noqa: F401
@@ -54,13 +54,22 @@ def _hint_text() -> str:
         "" if not qrcode_missing
         else "QR недоступен (нет пакета qrcode) — введите адрес в браузере телефона вручную."
     )
+    if mode == "rack":
+        target = (
+            "4. Каждое фото сразу уходит в открытый разбор стойки — "
+            "перекидывать файл не нужно.\n"
+        )
+    else:
+        target = (
+            "4. Каждое фото привязывается к активному устройству на главном экране.\n"
+        )
     return (
         "1. Телефон и ноутбук — в одной Wi-Fi-сети: включите на ноутбуке"
         " «Мобильный хот-спот» или раздайте сеть с телефона.\n"
         "2. Откройте камерой телефона QR (или введите адрес в браузер).\n"
         "3. Кнопки на странице: «Снять фото» — камера телефона, «Из галереи» —"
         " снимок, сделанный заранее.\n"
-        "4. Каждое фото привязывается к активному устройству на главном экране.\n"
+        + target
         + addendum
     )
 
@@ -107,7 +116,7 @@ class PhoneLinkDialog(QDialog):
         )
         layout.addWidget(self.qr_label, 0, Qt.AlignmentFlag.AlignHCenter)
 
-        hint = QLabel(_hint_text())
+        hint = QLabel(_hint_text(self.server.current_mode()))
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #9fb3c8; font-size: 12px;")
         layout.addWidget(hint)
@@ -190,7 +199,7 @@ class PhoneLinkDialog(QDialog):
         received = self.server.recent_received()
         while self._shown_received < len(received):
             record = received[self._shown_received]
-            who = record.device_name or "без устройства"
+            who = "стойка" if record.mode == "rack" else (record.device_name or "без устройства")
             self.log_list.insertItem(
                 0, f"{record.saved_at} · {who} · {Path(record.path).name}"
             )

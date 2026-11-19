@@ -17,6 +17,7 @@ class CodeType(str, Enum):
     EAN = "ean"
     IP = "ip"
     QR = "qr"
+    TIA = "tia"
     UNKNOWN = "unknown"
 
 
@@ -45,6 +46,10 @@ class ParsedCode:
     def ip(self) -> str | None:
         return self.fields.get("ip")
 
+    @property
+    def tia_label(self) -> str | None:
+        return self.fields.get("tia")
+
     def describe(self) -> str:
         labels = {
             CodeType.MAC: "MAC-адрес",
@@ -52,6 +57,7 @@ class ParsedCode:
             CodeType.EAN: "Товарный код (EAN)",
             CodeType.IP: "IP-адрес",
             CodeType.QR: "Структурированный QR",
+            CodeType.TIA: "Метка TIA-606",
             CodeType.UNKNOWN: "Не распознано",
         }
         text = labels[self.code_type]
@@ -176,6 +182,9 @@ def _canonical_key(key: str) -> str | None:
         "инвентарный": "asset_tag",
         "инвентарныйномер": "asset_tag",
         "hostname": "hostname",
+        "tia": "tia",
+        "tia606": "tia",
+        "метка": "tia",
     }
     return aliases.get(normalized)
 
@@ -194,6 +203,8 @@ def _normalize_field(key: str, value: Any) -> tuple[str, str] | None:
         return canonical, clean_serial(text) or text
     if canonical == "ip":
         return canonical, text
+    if canonical == "tia":
+        return canonical, text.upper()
     return canonical, text
 
 
@@ -281,6 +292,15 @@ def parse_code(raw: str | None) -> ParsedCode:
         return ParsedCode("", CodeType.UNKNOWN, note="Пустой код")
 
     structured = parse_structured_fields(text)
+    if structured.get("tia"):
+        return ParsedCode(
+            raw=text,
+            code_type=CodeType.TIA,
+            value=structured["tia"],
+            fields=structured,
+            confidence=0.98,
+            note=f"Метка {structured['tia']}",
+        )
     if structured:
         return ParsedCode(
             raw=text,

@@ -34,13 +34,13 @@ from PyQt6.QtGui import (
 
 from inventory.config import device_type_name
 from inventory.core.models import Device
-
-# Формат листа: A4, 3 колонки × 8 рядов этикеток 65×35 мм (24 на лист).
-_COLS, _ROWS = 3, 8
-_LABEL_W, _LABEL_H = 65.0, 35.0          # мм
-_PAGE_W, _PAGE_H = 210.0, 297.0          # мм
-_MARGIN_X = (_PAGE_W - _COLS * _LABEL_W) / 2   # 7.5 мм
-_MARGIN_Y = (_PAGE_H - _ROWS * _LABEL_H) / 2   # 8.5 мм
+from inventory.services.label_layout import (
+    FONT_FAMILY as _FONT_FAMILY,
+    LABEL_H_MM as _LABEL_H,
+    LABEL_W_MM as _LABEL_W,
+    LABELS_PER_PAGE,
+    slot_position,
+)
 
 
 def tag_code(device: Device) -> str | None:
@@ -93,9 +93,6 @@ def qr_image(text: str, size_px: int = 320) -> QImage:
     return qimg.copy().scaled(
         size_px, size_px, Qt.AspectRatioMode.KeepAspectRatio,
         Qt.TransformationMode.FastTransformation)
-
-
-_FONT_FAMILY = "Segoe UI"  # есть на любой Windows, полная кириллица
 
 
 def detect_qr_text(image_path: str | Path) -> str | None:
@@ -220,14 +217,12 @@ def generate_tags_pdf(devices: list[Device], out_path: str | Path,
     painter = QPainter(writer)
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
-    per_page = _COLS * _ROWS
+    per_page = LABELS_PER_PAGE
     for index, device in enumerate(printable):
         slot = index % per_page
         if index and slot == 0:
             writer.newPage()  # Qt6: у QPdfWriter новый лист через newPage()
-        col, row = slot % _COLS, slot // _COLS
-        x = (_MARGIN_X + col * _LABEL_W) * mm
-        y = (_MARGIN_Y + row * _LABEL_H) * mm
+        x, y = slot_position(slot, mm)
         _draw_label(painter, device, x, y, mm)
     painter.end()
     return len(printable), skipped

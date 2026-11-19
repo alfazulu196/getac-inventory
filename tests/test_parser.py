@@ -97,6 +97,26 @@ def test_unknown_code():
     assert parsed.note
 
 
+def test_parse_tia_label():
+    parsed = parse_code("TIA=DEMO-KORPUSA1101-SH1")
+    assert parsed.code_type == CodeType.TIA
+    assert parsed.tia_label == "DEMO-KORPUSA1101-SH1"
+    assert "TIA-606" in parsed.describe()
+
+
+def test_parse_tia_label_case_insensitive_key():
+    parsed = parse_code("tia=demo-korpusa1101-sh1")
+    assert parsed.code_type == CodeType.TIA
+    assert parsed.tia_label == "DEMO-KORPUSA1101-SH1"
+
+
+def test_parse_tia_label_from_url_query():
+    parsed = parse_code("https://label.local/?tia=DEMO-101-SH1")
+    assert parsed.code_type == CodeType.TIA
+    assert parsed.tia_label == "DEMO-101-SH1"
+
+
+
 def test_normalize_serial():
     assert normalize_serial(" ab 12-34 ") == "AB12-34"
 

@@ -89,42 +89,55 @@ def baseline_from_journal() -> dict[str, tuple[int, int, int, int, int]]:
 
 
 def run_variant(name: str, frames: list[str],
-                model: str | None = None) -> list[dict]:
-    """Прогон варианта по кадрам; результаты — строки отчёта."""
+                model: str | None = None, *, repeats: int = 1,
+                seed: int | None = None) -> list[dict]:
+    """Прогон варианта по кадрам; результаты — строки отчёта.
+
+    repeats > 1 — серия повторов для оценки разброса: каждая строка
+    помечается номером повтора, чтобы lab_repeats.py мог свести
+    min/max/среднее по кадру.
+    """
     rai._PROMPT = VARIANTS[name]  # подмена в памяти: файл не меняется
     prompt_sha = hashlib.sha256(VARIANTS[name].encode("utf-8")).hexdigest()[:12]
     expected = json.loads(EXPECTED_PATH.read_text(encoding="utf-8"))
     rows = []
-    for frame in frames:
-        path = FRAMES[frame]
-        t0 = time.perf_counter()
-        try:
-            analysis = rai.analyse_rack_photo(path, model=model)
-        except Exception as exc:  # noqa: BLE001 — сбои лабы не роняют прогон
+    for repeat in range(1, repeats + 1):
+        if repeats > 1:
+            print(f"  повтор {repeat}/{repeats}", flush=True)
+        for frame in frames:
+            path = FRAMES[frame]
+            t0 = time.perf_counter()
+            try:
+                analysis = rai.analyse_rack_photo(
+                    path, model=model, seed=seed)
+            except Exception as exc:  # noqa: BLE001 — сбои лабы не роняют прогон
+                rows.append({"variant": name, "frame": frame,
+                             "model": model, "prompt_sha": prompt_sha,
+                             "repeat": repeat, "seed": seed,
+                             "error": str(exc),
+                             "elapsed_s": round(time.perf_counter() - t0)})
+                print(f"  {frame}: СБОЙ {exc}", flush=True)
+                continue
+            elapsed = round(analysis.elapsed_s or (time.perf_counter() - t0))
+            if not analysis.ok:
+                rows.append({"variant": name, "frame": frame,
+                             "model": analysis.model_used,
+                             "prompt_sha": prompt_sha,
+                             "repeat": repeat, "seed": seed,
+                             "error": analysis.error or "?", "elapsed_s": elapsed})
+                print(f"  {frame}: ОШИБКА {analysis.error}", flush=True)
+                continue
+            actual = devices_to_dicts(analysis.devices)
+            full, partial, missed, extra = score(actual, expected[f"{frame}.jpg"])
             rows.append({"variant": name, "frame": frame,
-                         "model": model, "prompt_sha": prompt_sha,
-                         "error": str(exc),
-                         "elapsed_s": round(time.perf_counter() - t0)})
-            print(f"  {frame}: СБОЙ {exc}", flush=True)
-            continue
-        elapsed = round(analysis.elapsed_s or (time.perf_counter() - t0))
-        if not analysis.ok:
-            rows.append({"variant": name, "frame": frame,
-                         "model": analysis.model_used,
-                         "prompt_sha": prompt_sha,
-                         "error": analysis.error or "?", "elapsed_s": elapsed})
-            print(f"  {frame}: ОШИБКА {analysis.error}", flush=True)
-            continue
-        actual = devices_to_dicts(analysis.devices)
-        full, partial, missed, extra = score(actual, expected[f"{frame}.jpg"])
-        rows.append({"variant": name, "frame": frame,
-                     "model": analysis.model_used, "prompt_sha": prompt_sha,
-                     "full": full, "partial": partial, "missed": missed,
-                     "extra": extra, "n_rows": len(actual),
-                     "elapsed_s": elapsed})
-        print(f"  {frame}: точно {full}, частично {partial}, "
-              f"проп {missed}, лишних {extra}, строк {len(actual)}, "
-              f"{elapsed} с", flush=True)
+                         "model": analysis.model_used, "prompt_sha": prompt_sha,
+                         "repeat": repeat, "seed": seed,
+                         "full": full, "partial": partial, "missed": missed,
+                         "extra": extra, "n_rows": len(actual),
+                         "elapsed_s": elapsed})
+            print(f"  {frame}: точно {full}, частично {partial}, "
+                  f"проп {missed}, лишних {extra}, строк {len(actual)}, "
+                  f"{elapsed} с", flush=True)
     return rows
 
 
@@ -138,12 +151,26 @@ def main() -> int:
     parser.add_argument("--frame", choices=(*FRAMES, "all"), default="all")
     parser.add_argument("--model", default=None,
                         help="модель ollama (по умолчанию — как в приложении)")
+    parser.add_argument("--repeat", type=int, default=1, metavar="N",
+                        help="повторить каждый кадр N раз (разброс)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="фиксировать seed ollama (для проверки "
+                             "воспроизводимости)")
+    parser.add_argument("--out", default=None,
+                        help="куда писать JSON (по умолчанию "
+                             "tools/assets/bench/lab_results.json)")
     args = parser.parse_args()
+    if args.repeat < 1:
+        parser.error("--repeat должен быть >= 1")
     frames = list(FRAMES) if args.frame == "all" else [args.frame]
     variants = list(VARIANTS) if args.variant == "all" else [args.variant]
 
     print("МОДЕЛЬ:", args.model or "как в приложении (первая из VL_FALLBACKS)",
           flush=True)
+    if args.seed is not None:
+        print("SEED:", args.seed, flush=True)
+    if args.repeat > 1:
+        print("ПОВТОРОВ:", args.repeat, flush=True)
     base = baseline_from_journal()
     b_full = sum(v[0] for v in base.values())
     b_part = sum(v[1] for v in base.values())
@@ -156,7 +183,8 @@ def main() -> int:
     all_rows: list[dict] = []
     for name in variants:
         print(f"ВАРИАНТ {name}:", flush=True)
-        all_rows.extend(run_variant(name, frames, args.model))
+        all_rows.extend(run_variant(
+            name, frames, args.model, repeats=args.repeat, seed=args.seed))
 
     # Сводка по вариантам против базы.
     print("\n=== СВОДКА ===")
@@ -175,8 +203,10 @@ def main() -> int:
               f"{completeness(f, p, m):>8.0f}%")
 
     report = {"baseline": {k: list(v) for k, v in base.items()},
+              "repeats": args.repeat, "seed": args.seed,
               "runs": all_rows}
-    out = BENCH / "lab_results.json"
+    out = Path(args.out) if args.out else BENCH / "lab_results.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=1),
                    encoding="utf-8")
     print(f"\nОтчёт: {out}")

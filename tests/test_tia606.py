@@ -21,7 +21,9 @@ from tia606 import (  # noqa: E402
     LabelSpec,
     generate,
     parse,
+    port_labels,
     rack_labels,
+    sort_labels,
     validate,
     write_labels_csv,
 )
@@ -83,10 +85,16 @@ def test_db_mode(tmp_path):
                 (loc_id, "s1", building, "1", "101", "Ш-1", "", ts),
             )
     rows, warnings = rack_labels(collect(db.path))
-    assert len(rows) == 2
+    assert len(rows) == 1  # дубликат по умолчанию не печатается
     assert rows[0]["label"] == "OBEKTDEM-KORPUSA1101-SH1"
-    assert rows[0]["label"] == rows[1]["label"]
-    assert any("дубликат метки" in w for w in warnings)
+    assert any("дубликат метки" in w and "не напечатан" in w
+               for w in warnings)
+
+    kept, kept_warnings = rack_labels(collect(db.path),
+                                      allow_duplicates=True)
+    assert len(kept) == 2
+    assert kept[0]["label"] == kept[1]["label"]
+    assert any("дубликат метки" in w for w in kept_warnings)
 
     out = tmp_path / "out"
     path = write_labels_csv(out, rows)
@@ -94,5 +102,78 @@ def test_db_mode(tmp_path):
         table = list(csv.reader(fh))
     assert table[0] == ["label", "level", "site", "room", "rack",
                         "panel", "port"]
-    assert len(table) == 3  # заголовок + 2 стойки
+    assert len(table) == 2  # заголовок + одна стойка
     db.close()
+
+
+def test_sort_labels_natural_order():
+    rows = [
+        {"label": "A-1-SH10", "site": "A", "room": "1", "rack": "Ш-10",
+         "panel": "", "port": ""},
+        {"label": "A-1-SH2", "site": "A", "room": "1", "rack": "Ш-2",
+         "panel": "", "port": ""},
+        {"label": "A-2-SH1", "site": "A", "room": "2", "rack": "Ш-1",
+         "panel": "", "port": ""},
+    ]
+    assert [row["rack"] for row in sort_labels(rows)] == ["Ш-2", "Ш-10", "Ш-1"]
+    assert sort_labels(rows)[-1]["room"] == "2"
+
+
+def test_sort_labels_mixed_numeric_and_alpha():
+    """«1» и «A» в одном поле не должны ронять сортировку."""
+    rows = [
+        {"label": "A-1-1", "site": "A", "room": "1", "rack": "1",
+         "panel": "", "port": ""},
+        {"label": "A-1-A", "site": "A", "room": "1", "rack": "A",
+         "panel": "", "port": ""},
+    ]
+    assert len(sort_labels(rows)) == 2
+
+
+def test_port_labels_and_dedup():
+    rows = [
+        {"site": "Демо", "room": "Серверная", "rack": "Ш-4",
+         "panel": "A1", "port": "P01"},
+        {"site": "Демо", "room": "Серверная", "rack": "Ш-4",
+         "panel": "A1", "port": "P02"},
+        {"site": "Демо", "room": "Серверная", "rack": "Ш-4",
+         "panel": "A1", "port": "P01"},  # дубль
+    ]
+    result, warnings = port_labels(rows)
+    assert [row["label"] for row in result] == [
+        "DEMO-SERVERNAYA-SH4-A1-P01",
+        "DEMO-SERVERNAYA-SH4-A1-P02",
+    ]
+    assert result[0]["level"] == "port"
+    assert any("не напечатан" in w for w in warnings)
+
+    kept, _ = port_labels(rows, allow_duplicates=True)
+    assert len(kept) == 3
+
+
+def test_port_labels_skip_incomplete_rows():
+    result, warnings = port_labels([
+        {"site": "Демо", "room": "Серверная", "rack": "Ш-4",
+         "panel": "A1", "port": ""},
+    ])
+    assert result == []
+    assert any("нет полей port" in w for w in warnings)
+
+
+def test_db_label_matches_app_location_search(tmp_path):
+    """CSV-метка и поиск локации в приложении считаются одним модулем."""
+    from inventory.core.db import Database
+    from inventory.core.repository import InventoryRepository
+    from inventory.services.tia_labels import match_locations
+
+    db = Database(tmp_path / "match.db")
+    repo = InventoryRepository(db)
+    session = repo.create_session("Объект Демо", "Иванов")
+    location = repo.create_location(session.id, "1", "101",
+                                    building="Корпус А", rack="Ш-1")
+    rows, warnings = rack_labels(collect(db.path))
+    assert not warnings
+    assert match_locations([location], rows[0]["label"],
+                           session.object_name) == [location]
+    db.close()
+

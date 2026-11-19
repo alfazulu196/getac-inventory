@@ -37,6 +37,7 @@ from inventory.services.rack_ai import (
     position_sort_key,
 )
 from inventory.services.voice import VoiceService
+from inventory.ui.phone_link_dialog import PhoneLinkDialog
 from inventory.ui.photo_dialog import PhotoCaptureDialog
 from inventory.ui.rack_workers import RackAiWorker, WarmupWorker, detach_running
 from inventory.ui.widgets import big_button, secondary_button, ensure_field_restyle
@@ -64,6 +65,7 @@ class RackDialog(QDialog):
         *,
         location=None,
         photo_path: str | None = None,
+        photo_server=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -72,6 +74,7 @@ class RackDialog(QDialog):
         self.paths = paths
         self.voice = voice
         self.location = location
+        self.photo_server = photo_server
         self._photo_path = photo_path
         self._analysis: RackAnalysis | None = None
         self._worker: RackAiWorker | None = None
@@ -84,6 +87,9 @@ class RackDialog(QDialog):
         self.setMinimumSize(980, 640)
         self._build_ui()
         ensure_field_restyle()
+        # Пока диалог открыт, фото с телефона идут в разбор стойки:
+        # режим сервера переключается на rack до закрытия диалога.
+        self._set_phone_context()
         self._init_draft()
         if self._try_restore_draft():
             # Модель пусть греется для «🔁 Ещё кадр», камеру не открываем.
@@ -214,6 +220,11 @@ class RackDialog(QDialog):
         root.addWidget(self.table, 1)
 
         buttons = QHBoxLayout()
+        self.phone_btn = secondary_button("📱 С телефона", height=52, font_size=15)
+        self.phone_btn.setToolTip(
+            "Снять стойку телефоном: фото сразу уйдёт в этот разбор")
+        self.phone_btn.clicked.connect(self._open_phone_link)
+        buttons.addWidget(self.phone_btn)
         self.shot_btn = secondary_button("🔁 Ещё кадр", height=52, font_size=15)
         self.shot_btn.setToolTip("Разобрать второй кадр стойки и дополнить список")
         self.shot_btn.clicked.connect(self._another_shot)
@@ -248,6 +259,7 @@ class RackDialog(QDialog):
             self.status_label.setText(f"❌ Распознавание недоступно: {info}")
             self.status_label.setStyleSheet("color: #e67e22;")
             self.shot_btn.setEnabled(False)
+            self.phone_btn.setEnabled(False)
             QMessageBox.information(
                 self,
                 "Стойка по фото",
@@ -292,6 +304,41 @@ class RackDialog(QDialog):
             return
         self._start_analysis(dialog.photo_path)
 
+    def _set_phone_context(self) -> None:
+        """Режим «стойка» на сервере фото, пока открыт этот диалог."""
+        if self.photo_server is None:
+            return
+        location = self.location.label() if self.location else ""
+        self.photo_server.set_context("Стойка", location, mode="rack")
+
+    def _open_phone_link(self) -> None:
+        """QR-адрес приёма фото; снимки телефона идут прямо в разбор."""
+        if self.photo_server is None:
+            QMessageBox.information(
+                self, "Фото с телефона",
+                "Приём фото с телефона в этом окне недоступен.")
+            return
+        self._set_phone_context()
+        if not self.photo_server.urls:
+            try:
+                self.photo_server.urls = self.photo_server.start()
+            except Exception as exc:  # noqa: BLE001 — порт занят и т.п.
+                QMessageBox.warning(
+                    self, "Фото с телефона",
+                    f"Не удалось запустить приём фото: {exc}")
+                return
+        PhoneLinkDialog(self.photo_server, self).exec()
+        self._set_phone_context()  # после закрытия — снова режим стойки
+
+    def add_photo_from_phone(self, path: str) -> None:
+        """Фото, принятое с телефона в режиме rack: сразу в разбор."""
+        self.raise_()
+        self.activateWindow()
+        self.status_label.setText(
+            f"📱 Фото с телефона: {Path(path).name} — разбираю…")
+        self.status_label.setStyleSheet("color: #f1c40f;")
+        self._start_analysis(path)
+
     def _start_analysis(self, path: str) -> None:
         detach_running(self._worker)
         self._worker = RackAiWorker(path, self, log_dir=self.paths.get("logs"))
@@ -316,6 +363,7 @@ class RackDialog(QDialog):
 
     def _set_busy(self, busy: bool) -> None:
         self.shot_btn.setEnabled(not busy)
+        self.phone_btn.setEnabled(not busy)
         self.row_btn.setEnabled(not busy)
         self.create_btn.setEnabled(False)
         self.stop_btn.setVisible(busy)
@@ -330,6 +378,7 @@ class RackDialog(QDialog):
         detach_running(self._worker)
         self._worker = None
         self.shot_btn.setEnabled(True)
+        self.phone_btn.setEnabled(True)
         self.row_btn.setEnabled(True)
         self.stop_btn.hide()
         self.stop_btn.setEnabled(True)

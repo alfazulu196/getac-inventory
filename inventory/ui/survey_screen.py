@@ -52,6 +52,7 @@ from inventory.services.scanner import (
     ScannerThread,
     trigger_laser,
 )
+from inventory.services.tia_labels import match_locations
 from inventory.services.voice import VoiceService
 from inventory.ui.device_card import DeviceCardDialog
 from inventory.ui.device_list import DeviceListDialog
@@ -79,10 +80,11 @@ from inventory.ui.widgets import (
 class PhotoLinkBridge(QObject):
     """Мост: фото пришло из потока сервера — сигнал уходит в главный поток."""
 
-    photo_received = pyqtSignal(str)
+    photo_received = pyqtSignal(str, str)  # путь, режим (device/rack)
 
-    def forward(self, path: str, _device_name: str) -> None:
-        self.photo_received.emit(path)
+    def forward(self, path: str, _device_name: str,
+                mode: str = "device") -> None:
+        self.photo_received.emit(path, mode)
 
 
 class SurveyScreen(QWidget):
@@ -117,6 +119,7 @@ class SurveyScreen(QWidget):
         self._voice_recording = False
         self._photo_intel_worker: PhotoIntelWorker | None = None
         self._photo_intel_path: str | None = None
+        self._rack_dialog: RackDialog | None = None
         self._battery_warned = False
         self._battery_timer = QTimer(self)
         self._battery_timer.setInterval(30_000)
@@ -723,10 +726,16 @@ class SurveyScreen(QWidget):
         if self.session.status != "active":
             QMessageBox.warning(self, "Сессия", "Сессия уже завершена")
             return
+
+        parsed = parse_code(raw)
+        # Метка TIA-606 — это команда «перейти в локацию», а не устройство.
+        # Разбираем до ensure_location: сканом стойки локация и выбирается.
+        if parsed.code_type.value == "tia":
+            self._apply_tia_scan(raw, parsed)
+            return
         if not self.ensure_location():
             return
 
-        parsed = parse_code(raw)
         if parsed.code_type.value in ("mac", "serial") or (
             parsed.code_type.value == "qr" and parsed.fields
         ):
@@ -784,6 +793,47 @@ class SurveyScreen(QWidget):
                 )
             else:
                 self._log(raw, parsed, "ignored")
+
+    def _apply_tia_scan(self, raw: str, parsed) -> None:
+        """Скан QR-метки стойки → текущая локация сессии.
+
+        Метка на наклейке — транслит и усечение, обратно в имена она не
+        разворачивается. Поэтому генерируем метки всех локаций сессии
+        тем же модулем и ищем точное совпадение.
+        """
+        label = (parsed.tia_label or "").strip().upper()
+        matches = match_locations(
+            self.repo.list_locations(self.session.id), label,
+            self.session.object_name)
+        self.last_result.setText(
+            f"<span style='color:#3498db;'><b>Метка TIA-606:</b> "
+            f"{escape(label)}</span>")
+        if not matches:
+            self._log(raw, parsed, "location_missing")
+            beep_error()
+            QMessageBox.information(
+                self, "Метка TIA-606",
+                f"Метка {label} не найдена среди локаций этой сессии.\n"
+                "Метка должна быть напечатана из этой же базы; "
+                "выберите локацию вручную.")
+            return
+        location = matches[0]
+        self.current_location = location
+        self.config.last_location_id = location.id
+        try:
+            save_config(self.config)
+        except OSError:
+            pass
+        self.update_location_button()
+        self._log(raw, parsed, "location")
+        beep_ok()
+        self.toast.show_message(
+            f"Локация по метке: {location.label()}", "success")
+        if len(matches) > 1:
+            QMessageBox.warning(
+                self, "Дубли меток",
+                f"Метка {label} совпала с {len(matches)} локациями. "
+                "Выбрана последняя; проверьте дубли в labels.csv.")
 
     def _initial_from_parsed(self, parsed) -> dict[str, Any]:
         initial: dict[str, Any] = {
@@ -883,9 +933,18 @@ class SurveyScreen(QWidget):
             self.paths,
             self.voice,
             location=self.current_location,
+            photo_server=self.photo_server,
             parent=self,
         )
-        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.created_devices:
+        self._rack_dialog = dialog
+        try:
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        finally:
+            # Закрыли разбор — фото с телефона снова идут в карточку
+            # активного устройства, а не в несуществующую стойку.
+            self._rack_dialog = None
+            self.refresh_active()
+        if accepted and dialog.created_devices:
             self.active_device = dialog.created_devices[-1]
             beep_ok()
             self.refresh_all()
@@ -980,7 +1039,28 @@ class SurveyScreen(QWidget):
         dialog = PhoneLinkDialog(self.photo_server, self)
         dialog.exec()
 
-    def _on_phone_photo(self, path: str) -> None:
+    def _on_phone_photo(self, path: str, mode: str = "device") -> None:
+        if mode == "rack":
+            # Снимок стойки: не привязываем к устройству, а отдаём в
+            # открытый разбор. Если разбор уже закрыли — файл остаётся
+            # в data/photos, говорим об этом честно.
+            dialog = self._rack_dialog
+            if dialog is not None:
+                dialog.add_photo_from_phone(path)
+                self.toast.show_message(
+                    "📱 Фото стойки с телефона получено — разбираю",
+                    "success",
+                    timeout=8000,
+                )
+                beep_ok()
+            else:
+                self.toast.show_message(
+                    "📱 Фото стойки принято, но разбор уже закрыт — "
+                    "файл сохранён в data\\photos",
+                    "warning",
+                    timeout=12000,
+                )
+            return
         if not self.active_device:
             # Нет активного устройства: пробуем опознать этикетку и создать
             # устройство по фото.

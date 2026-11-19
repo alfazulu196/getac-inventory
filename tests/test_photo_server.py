@@ -43,9 +43,12 @@ def _multipart(boundary: str, payloads: list[bytes]) -> bytes:
     return b"".join(chunks)
 
 
-def make_server(tmp_path: Path) -> tuple[PhotoServer, list[tuple[str, str]]]:
-    calls: list[tuple[str, str]] = []
-    server = PhotoServer(tmp_path / "photos", on_photo=lambda path, device: calls.append((path, device)))
+def make_server(tmp_path: Path) -> tuple[PhotoServer, list[tuple[str, str, str]]]:
+    calls: list[tuple[str, str, str]] = []
+    server = PhotoServer(
+        tmp_path / "photos",
+        on_photo=lambda path, device, mode: calls.append((path, device, mode)),
+    )
     server.token = "tok12345"
     server.start()
     return server, calls
@@ -95,7 +98,52 @@ def test_upload_saves_png_and_jpeg_with_callback(tmp_path: Path):
             assert (tmp_path / "photos" / name).exists()
         assert all(name.startswith("CAM-007_") for name in data["saved"])
         assert len(calls) == 2
-        assert all(device == "CAM-007" for _, device in calls)
+        assert all(device == "CAM-007" for _, device, _ in calls)
+        assert all(mode == "device" for _, _, mode in calls)
+    finally:
+        server.stop()
+
+
+def test_rack_mode_routes_photo_to_rack(tmp_path: Path):
+    """Режим стойки: страница и /info сообщают rack, файл — rack_*.jpg."""
+    server, calls = make_server(tmp_path)
+    try:
+        server.set_context("Стойка", "Корпус А · 101", mode="rack")
+        status, body = _request(server.port, "GET", f"/{server.token}/info")
+        data = json.loads(body.decode("utf-8"))
+        assert status == 200
+        assert data["mode"] == "rack"
+        assert data["device"] == "Стойка"
+
+        status, page = _request(server.port, "GET", f"/{server.token}")
+        assert status == 200
+        assert "Фото стойки".encode() in page
+
+        status, body = _request(
+            server.port,
+            "POST",
+            f"/{server.token}/upload",
+            body=_multipart("bNdr", [JPEG]),
+            headers={"Content-Type": "multipart/form-data; boundary=bNdr"},
+        )
+        data = json.loads(body.decode("utf-8"))
+        assert status == 200 and data["ok"] is True
+        assert data["saved"][0].startswith("rack_")
+        assert calls == [(str(tmp_path / "photos" / data["saved"][0]),
+                          "Стойка", "rack")]
+        record = server.recent_received()[-1]
+        assert record.mode == "rack"
+    finally:
+        server.stop()
+
+
+def test_set_context_defaults_to_device_mode(tmp_path: Path):
+    server, _ = make_server(tmp_path)
+    try:
+        server.set_context("CAM-1", "")
+        assert server.current_mode() == "device"
+        server.set_context("CAM-1", "", mode="unknown")
+        assert server.current_mode() == "device"
     finally:
         server.stop()
 
